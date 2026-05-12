@@ -1,0 +1,24 @@
+# build output
+build/
+cmake-build-*/
+out/
+
+# object / library files
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# executables
+*.exe
+*.out
+
+# common binary names
+main
+app
+server
+client
+multi_port
