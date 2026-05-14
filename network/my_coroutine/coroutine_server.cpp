@@ -60,15 +60,15 @@ namespace hpc_coroutine
         return fd;
     }
 
-    void server_reader(void *arg)
+    void server_process(void *arg)
     {
         int fd = *(int *)arg;
         free(arg);
         int ret = 0;
+        struct network::StatusM status_m;
 
         while (1)
         {
-
             char buf[1024] = {0};
             ret = recv(fd, buf, 1024, 0);
             if (ret > 0)
@@ -101,6 +101,7 @@ namespace hpc_coroutine
         {
             socklen_t len = sizeof(struct sockaddr_in);
             int cli_fd = accept(fd, (struct sockaddr *)&remote, &len);
+#ifdef TIMER
             if (cli_fd % 1000 == 999)
             {
 
@@ -112,11 +113,12 @@ namespace hpc_coroutine
 
                 printf("client fd : %d, time_used: %d\n", cli_fd, time_used);
             }
+#endif
             // printf("new client comming\n");
 
             int *arg = (int *)malloc(sizeof(int));
             *arg = cli_fd;
-            hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server_reader, arg);
+            hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server_process, arg);
         }
     }
 }

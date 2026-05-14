@@ -46,6 +46,7 @@ namespace reactor
         _pool[fd].is_used = false;
         close(fd);
         _pool[fd].fd = -1;
+        _pool[fd].status.status = 0;
         _pool[fd].rbuf_size = 0;
         _pool[fd].wbuf_size = 0;
         _pool[fd].servers = nullptr;
@@ -73,6 +74,7 @@ namespace reactor
         }
         _pool[fd].fd = fd;
         _pool[fd].recv_cb = accept_callback;
+        _pool[fd].status.status = 0;
         _pool[fd].is_used = true;
         _pool[fd].servers = servers;
 
@@ -87,6 +89,7 @@ namespace reactor
             return -1;
         }
         _pool[fd].fd = fd;
+        _pool[fd].status.status = 0;
         _pool[fd].rbuf_size = 0;
         _pool[fd].wbuf_size = 0;
         _pool[fd].is_used = true;
@@ -94,14 +97,17 @@ namespace reactor
         _pool[fd].send_cb = send_callback;
         _pool[fd].servers = servers;
 
-        _pool[fd].rbuf = (char *)malloc(sizeof(char) * BUFFER_SIZE);
-        _pool[fd].wbuf = (char *)malloc(sizeof(char) * BUFFER_SIZE);
-        if (_pool[fd].rbuf == NULL || _pool[fd].wbuf == NULL)
+        if (_pool[fd].rbuf != nullptr)
         {
-            perror("Error assign wbuffer or rbuffer");
-            clean_up_conn(fd);
-            return -1;
+            free(_pool[fd].rbuf);
+            _pool[fd].rbuf = nullptr;
         }
+        if (_pool[fd].wbuf != nullptr)
+        {
+            free(_pool[fd].wbuf);
+            _pool[fd].wbuf = nullptr;
+        }
+
         return 0;
     }
 
@@ -280,13 +286,14 @@ namespace reactor
             pool->clean_up_conn(clientfd);
             return -1;
         }
-
+#ifdef TIMER
         if (clientfd % 1000 == 0)
         {
             int duration = Timer::get_timer().get_duration_ms();
             printf("Connection num: %d, elipse: %d\n", clientfd, duration);
             fflush(stdout);
         }
+#endif
         return 0;
     }
 

@@ -219,13 +219,14 @@ namespace proactor
         {
             return -1;
         }
-
+#ifdef TIMER
         if (clientfd % 1000 == 0)
         {
             int duration = Timer::get_timer().get_duration_ms();
-            // printf("Connection num: %d, elipse: %d\n", clientfd, duration);
-            // fflush(stdout);
+            printf("Connection num: %d, elipse: %d\n", clientfd, duration);
+            fflush(stdout);
         }
+#endif
 
         set_event_recv(clientfd, pool->operator[](clientfd), 0);
         return 0;

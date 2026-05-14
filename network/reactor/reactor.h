@@ -1,10 +1,8 @@
-#ifndef __URING_TCP_H
-#define __URING_TCP_H
+#ifndef __REACTOR_H
+#define __REACTOR_H
 
-#define MAX_CONN_SIZE 1048576
-#include <stddef.h>
 #include <stdint.h>
-
+#include <stddef.h>
 #include <unistd.h>
 #include <sys/time.h>
 #include <time.h>
@@ -21,37 +19,46 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
-#include <liburing.h>
 
 #include <signal.h>
 
+#include "status.h"
+#include "kv_protocal.h"
+
 #define BUFFER_SIZE 1024
-#define ACCEPT_EVENT 1
-#define READ_EVENT 2
-#define WRITE_EVENT 4
-
-#define ENTRIES 1024
-
+#define MAX_CONN_SIZE 1048576
 #ifndef PORT_NUM
 #define PORT_NUM 20
 #endif
 
 #define TIME_SUB_MS(t1, t2) ((t1.tv_sec - t2.tv_sec) * 1000 + (t1.tv_usec - t2.tv_usec) / 1000)
 
-namespace proactor
+namespace reactor
 {
+
+    typedef int (*ReactorCallback)(int);
+
+    class TcpServers;
+
     struct Conn
     {
         bool is_used;
-        uint16_t event;
-        uint16_t addr_idx;
         int fd;
-
+        network::StatusM status;
         size_t rbuf_size;
         size_t wbuf_size;
         char *rbuf;
         char *wbuf;
+        ReactorCallback recv_cb;
+        ReactorCallback send_cb;
+        TcpServers *servers;
     };
+
+    int accept_callback(int fd);
+
+    int recv_callback(int fd);
+
+    int send_callback(int fd);
 
     class ConnPool
     {
@@ -61,9 +68,9 @@ namespace proactor
 
         void clean_up_conn(int fd);
 
-        int setup_accept_conn(int fd);
+        int setup_accept_conn(int fd, TcpServers *servers);
 
-        int setup_client_conn(int fd);
+        int setup_client_conn(int fd, TcpServers *servers);
 
     private:
         ConnPool() {}
@@ -76,6 +83,55 @@ namespace proactor
         Conn _pool[MAX_CONN_SIZE] = {0};
     };
 
+    // class TcpServer
+    // {
+    // public:
+    //     TcpServer(uint16_t port) : _port(port) {}
+
+    //     int init_server();
+
+    //     ~TcpServer();
+
+    // private:
+    //     TcpServer(const TcpServer &) = delete;
+
+    //     TcpServer &operator=(const TcpServer &) = delete;
+
+    //     uint16_t _port;
+    //     int _listenfd; // listen fd
+    // };
+
+    // class EventLoop
+    // {
+    // public:
+    //     static EventLoop *get_epoll_item();
+
+    //     int set_event(int fd, uint32_t events, int ops);
+
+    //     int del_fd(int fd);
+
+    //     int init();
+
+    //     int start_loop();
+
+    // private:
+    //     EventLoop() : _epfd(-1) {}
+
+    //     EventLoop(const EventLoop &) = delete;
+    //     EventLoop(EventLoop &&) = delete;
+
+    //     EventLoop &operator=(const EventLoop &) = delete;
+    //     EventLoop &operator=(EventLoop &&) = delete;
+
+    //     ~EventLoop()
+    //     {
+    //         close(_epfd);
+    //     }
+
+    //     int _epfd;
+    //     ::epoll_event _events[1024];
+    // };
+
     class TcpServers
     {
     public:
@@ -85,29 +141,24 @@ namespace proactor
 
         int start_eventloop();
 
+        int set_event(int fd, uint32_t events, int ops);
+
+        int del_fd(int fd);
+
         ~TcpServers();
 
     private:
         int init_server(uint16_t port);
 
-        int set_event_accept(int fd, int flags, struct ::sockaddr *addr,
-                             ::socklen_t *addrlen, Conn *conn);
+        TcpServers(const TcpServers &) = delete;
+        TcpServers(TcpServers &&) = delete;
 
-        int set_event_recv(int fd, Conn *conn, int flags);
+        TcpServers &operator=(const TcpServers &) = delete;
+        TcpServers &operator=(TcpServers &&) = delete;
 
-        int set_event_send(int fd, Conn *conn, int flags);
-
-        int accept_cb(Conn *conn, struct io_uring_cqe *cqe);
-
-        int recv_cb(Conn *conn, struct io_uring_cqe *cqe);
-
-        int send_cb(Conn *conn, struct io_uring_cqe *cqe);
-
-        struct io_uring _ring;
-        int _fd_list[PORT_NUM] = {0};
-        sockaddr_in _sock_in_list[PORT_NUM] = {0};
-        socklen_t _socklen_list[PORT_NUM] = {0};
         uint16_t _port;
+        int _epfd;
+        int _fd_list[PORT_NUM];
     };
 
     class Timer
@@ -146,6 +197,6 @@ namespace proactor
         timeval _begin;
         std::mutex _mtx;
     };
-}
 
-#endif // __URING_TCP_H
+}
+#endif // __REACTOR_H
