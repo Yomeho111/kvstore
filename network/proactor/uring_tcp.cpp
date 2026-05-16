@@ -2,6 +2,9 @@
 
 #include <errno.h>
 
+#include "allocator.h"
+#include "kv_protocal.hpp"
+
 namespace proactor
 {
     ConnPool *ConnPool::get_connpool()
@@ -47,6 +50,8 @@ namespace proactor
         _pool[fd].fd = -1;
         _pool[fd].rbuf_size = 0;
         _pool[fd].wbuf_size = 0;
+        _pool[fd].status.status = 0;
+        _pool[fd].status.buffer_size = 0;
         if (_pool[fd].rbuf != nullptr)
         {
             free(_pool[fd].rbuf);
@@ -68,6 +73,7 @@ namespace proactor
         }
         _pool[fd].fd = fd;
         _pool[fd].is_used = true;
+        _pool[fd].status.status = 0;
         _pool[fd].event = ACCEPT_EVENT;
 
         return 0;
@@ -81,18 +87,22 @@ namespace proactor
             return -1;
         }
         _pool[fd].fd = fd;
+        _pool[fd].status.status = 0;
+        _pool[fd].status.buffer_size = kv_protocal::HEADER_SIZE;
         _pool[fd].rbuf_size = 0;
         _pool[fd].wbuf_size = 0;
         _pool[fd].is_used = true;
         _pool[fd].event = READ_EVENT;
 
-        _pool[fd].rbuf = (char *)malloc(sizeof(char) * BUFFER_SIZE);
-        _pool[fd].wbuf = (char *)malloc(sizeof(char) * BUFFER_SIZE);
-        if (_pool[fd].rbuf == NULL || _pool[fd].wbuf == NULL)
+        if (_pool[fd].rbuf != nullptr)
         {
-            perror("Error assign wbuffer or rbuffer");
-            clean_up_conn(fd);
-            return -1;
+            free(_pool[fd].rbuf);
+            _pool[fd].rbuf = nullptr;
+        }
+        if (_pool[fd].wbuf != nullptr)
+        {
+            free(_pool[fd].wbuf);
+            _pool[fd].wbuf = nullptr;
         }
         return 0;
     }
@@ -154,7 +164,19 @@ namespace proactor
         struct io_uring_sqe *sqe = io_uring_get_sqe(&_ring);
 
         conn->event = READ_EVENT;
-        io_uring_prep_recv(sqe, fd, conn->rbuf, BUFFER_SIZE, flags);
+        if (conn->rbuf != nullptr)
+        {
+            allocator::kv_free(conn->rbuf);
+            conn->rbuf = nullptr;
+        }
+        conn->rbuf = (char *)allocator::kv_malloc(conn->status.buffer_size + 1);
+        if (conn->rbuf == nullptr)
+        {
+            perror("error malloc");
+            return -1;
+        }
+        conn->rbuf_size = conn->status.buffer_size;
+        io_uring_prep_recv(sqe, fd, conn->rbuf, conn->rbuf_size, flags);
         memcpy(&sqe->user_data, &conn, sizeof(conn));
         return 0;
     }
@@ -164,7 +186,7 @@ namespace proactor
         struct io_uring_sqe *sqe = io_uring_get_sqe(&_ring);
 
         conn->event = WRITE_EVENT;
-        io_uring_prep_send(sqe, fd, conn->wbuf, conn->wbuf_size, flags);
+        io_uring_prep_send(sqe, fd, conn->wbuf, kv_protocal::HEADER_SIZE + conn->wbuf_size, flags);
         memcpy(&sqe->user_data, &conn, sizeof(conn));
         return 0;
     }
@@ -228,49 +250,121 @@ namespace proactor
         }
 #endif
 
-        set_event_recv(clientfd, pool->operator[](clientfd), 0);
+        if (set_event_recv(clientfd, pool->operator[](clientfd), 0) == -1)
+        {
+            perror("Error set_event_recv");
+            pool->clean_up_conn(clientfd);
+            return -1;
+        }
         return 0;
     }
 
     int TcpServers::recv_cb(Conn *conn, struct io_uring_cqe *cqe)
     {
-        int ret = cqe->res;
+        int count = cqe->res;
+        int ret = 0;
 
-        if (ret == 0)
+        if (count == 0)
         {
-            ConnPool::get_connpool()->clean_up_conn(conn->fd);
-            return 0;
+            goto clean;
         }
-        else if (ret < 0)
+        else if (count < 0)
         {
             if (ret == -ECONNRESET)
             {
                 // printf("ECONNRESET by recv.\n");
-                return 0;
+                goto clean;
             }
             errno = -ret;
             perror("error recv");
-            ConnPool::get_connpool()->clean_up_conn(conn->fd);
-            return -1;
+            ret = -1;
+            goto clean;
         }
 
-        conn->rbuf_size = ret;
+        switch (conn->status.status)
+        {
+        case 0:
+        {
+            if (count != conn->status.buffer_size)
+            {
+                perror("corrupted header");
+                goto clean;
+            }
 
-        conn->wbuf_size = ret;
+            if (kv_protocal::KvStoreProtocal::instance().process_header(&conn->status, (struct kv_protocal::KvHeader *)conn->rbuf) != 0)
+            {
+                perror("Corrupted header");
+                ret = -1;
+                goto clean;
+            }
 
-        memcpy(conn->wbuf, conn->rbuf, ret);
+            if (set_event_recv(conn->fd, conn, 0) == -1)
+            {
+                perror("Error set_event_recv");
+                ret = -1;
+                goto clean;
+            }
+            break;
+        }
+        case 1:
+        {
+            if (count != conn->status.buffer_size)
+            {
+                perror("corrupted body");
+                goto clean;
+            }
 
-        set_event_send(conn->fd, conn, 0);
+            if (conn->wbuf != nullptr)
+            {
+                allocator::kv_free(conn->wbuf);
+                conn->wbuf = nullptr;
+            }
 
-        // printf("recv: %ld, %s\n", conn->rbuf_size, conn->rbuf);
-        return 0;
+            conn->rbuf[conn->rbuf_size] = '\0';
+            count = kv_protocal::KvStoreProtocal::instance().process_body(&conn->status, conn->rbuf, conn->rbuf_size, &conn->wbuf);
+            if (count < 0)
+            {
+                perror("Error handling body");
+                ret = -1;
+                goto clean;
+            }
+
+            conn->wbuf_size = count;
+
+            set_event_send(conn->fd, conn, 0);
+            break;
+        }
+        default:
+            perror("Error recv status");
+            ret = -1;
+            goto clean;
+        }
+
+        return ret;
+    clean:
+        ConnPool::get_connpool()->clean_up_conn(conn->fd);
+        return ret;
     }
 
     int TcpServers::send_cb(Conn *conn, struct io_uring_cqe *cqe)
     {
         int ret = cqe->res;
 
-        // printf("send: %ld, %s\n", conn->wbuf_size, conn->wbuf);
+        if (ret != kv_protocal::HEADER_SIZE + conn->wbuf_size)
+        {
+            perror("Error send");
+            ConnPool::get_connpool()->clean_up_conn(conn->fd);
+            return -1;
+        }
+
+        if (conn->wbuf != nullptr)
+        {
+            allocator::kv_free(conn->wbuf);
+            conn->wbuf = nullptr;
+        }
+
+        conn->status.status = 0;
+        conn->status.buffer_size = kv_protocal::HEADER_SIZE;
 
         set_event_recv(conn->fd, conn, 0);
         return 0;

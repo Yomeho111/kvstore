@@ -1,0 +1,2 @@
+cmake -S . -B build -DNETWORK=REACTOR -DKVSTORE_PORT_NUM=1 -DKVSTORE_ENABLE_TIMER=ON
+cmake --build build

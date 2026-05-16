@@ -26,9 +26,7 @@
 #include <signal.h>
 
 #include "status.h"
-#include "kv_protocal.h"
 
-#define BUFFER_SIZE 1024
 #define ACCEPT_EVENT 1
 #define READ_EVENT 2
 #define WRITE_EVENT 4

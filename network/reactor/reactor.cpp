@@ -1,4 +1,6 @@
 #include "reactor.h"
+#include "allocator.h"
+#include "kv_protocal.hpp"
 
 namespace reactor
 {
@@ -47,6 +49,7 @@ namespace reactor
         close(fd);
         _pool[fd].fd = -1;
         _pool[fd].status.status = 0;
+        _pool[fd].status.buffer_size = 0;
         _pool[fd].rbuf_size = 0;
         _pool[fd].wbuf_size = 0;
         _pool[fd].servers = nullptr;
@@ -90,6 +93,7 @@ namespace reactor
         }
         _pool[fd].fd = fd;
         _pool[fd].status.status = 0;
+        _pool[fd].status.buffer_size = 0;
         _pool[fd].rbuf_size = 0;
         _pool[fd].wbuf_size = 0;
         _pool[fd].is_used = true;
@@ -269,10 +273,6 @@ namespace reactor
 
         Conn *sock_conn = pool->operator[](fd);
 
-        // char *client_ip = inet_ntoa(caddr.sin_addr);
-
-        // printf("%s connect to the server\n", client_ip);
-
         // register the clientfd into conn_list
         if (pool->setup_client_conn(clientfd, sock_conn->servers) == -1)
         {
@@ -299,6 +299,7 @@ namespace reactor
 
     int recv_callback(int fd)
     {
+        int ret = 0;
         if (fd < 0 || fd >= MAX_CONN_SIZE)
         {
             perror("Invalid sockfd");
@@ -309,43 +310,114 @@ namespace reactor
 
         Conn *conn = (*pool)[fd];
 
-        memset(conn->rbuf, 0, BUFFER_SIZE);
-        int count = recv(fd, conn->rbuf, BUFFER_SIZE, 0);
-        if (count == 0)
+        switch (conn->status.status)
         {
-            // printf("Connection %d disconnected\n", fd);
-            if (conn->servers->del_fd(fd) == -1)
+        case 0:
+        {
+            struct kv_protocal::KvHeader header;
+            memset(&header, 0, kv_protocal::HEADER_SIZE);
+
+            int count = recv(fd, &header, kv_protocal::HEADER_SIZE, 0);
+            if (count == 0)
+                goto clean;
+            else if (count < 0)
             {
-                perror("error del_fd");
+                if (count == -ECONNRESET)
+                    goto clean;
+                ret = -1;
+                perror("Error recv");
+                goto clean;
             }
-            pool->clean_up_conn(fd);
-            return -1;
-        }
-        else if (count < 0)
-        {
-            if (count == -ECONNRESET)
-                return 0;
-            perror("Error recv");
-            if (conn->servers->del_fd(fd) == -1)
+            else if (count != kv_protocal::HEADER_SIZE)
             {
-                perror("error del_fd");
+                perror("corrupted header");
+                goto clean;
             }
-            pool->clean_up_conn(fd);
-            return -1;
+
+            if (kv_protocal::KvStoreProtocal::instance().process_header(&conn->status, &header) != 0)
+            {
+                perror("Corrupted header");
+                ret = -1;
+                goto clean;
+            }
+
+            if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
+            {
+                perror("error set_event");
+                ret = -1;
+                goto clean;
+            }
+            break;
         }
 
-        conn->rbuf_size = count;
-
-        // printf("recv: %d, %s\n", count, conn->rbuf);
-
-        if (conn->servers->set_event(fd, EPOLLOUT, EPOLL_CTL_MOD))
+        case 1:
         {
-            perror("error set_event");
-            pool->clean_up_conn(fd);
-            return -1;
+            if (conn->rbuf != nullptr)
+            {
+                allocator::kv_free(conn->rbuf);
+                conn->rbuf = nullptr;
+            }
+
+            conn->rbuf = (char *)allocator::kv_malloc(conn->status.buffer_size + 1);
+            if (conn->rbuf == nullptr)
+            {
+                perror("error allocator::kv_malloc");
+                ret = -1;
+                goto clean;
+            }
+
+            int count = recv(fd, conn->rbuf, conn->status.buffer_size, 0);
+            if (count == 0)
+                goto clean;
+            else if (count < 0)
+            {
+                if (count == -ECONNRESET)
+                    goto clean;
+                ret = -1;
+                perror("Error recv");
+                goto clean;
+            }
+
+            conn->rbuf[conn->status.buffer_size] = '\0';
+
+            if (conn->wbuf != nullptr)
+            {
+                allocator::kv_free(conn->wbuf);
+                conn->wbuf = nullptr;
+            }
+            count = kv_protocal::KvStoreProtocal::instance().process_body(&conn->status, conn->rbuf, conn->rbuf_size, &conn->wbuf);
+            if (count < 0)
+            {
+                perror("Error handling body");
+                ret = -1;
+                goto clean;
+            }
+
+            conn->wbuf_size = conn->status.buffer_size;
+
+            if (conn->servers->set_event(fd, EPOLLOUT, EPOLL_CTL_MOD))
+            {
+                perror("error set_event");
+                ret = -1;
+                goto clean;
+            }
+            break;
+        }
+        default:
+            perror("Error recv status");
+            ret = -1;
+            goto clean;
         }
 
-        return 0;
+        return ret;
+
+    clean:
+        if (conn->servers->del_fd(fd) == -1)
+        {
+            perror("error del_fd");
+        }
+        pool->clean_up_conn(fd);
+        return ret;
     }
 
     int send_callback(int fd)
@@ -359,35 +431,47 @@ namespace reactor
         auto *pool = ConnPool::get_connpool();
 
         Conn *conn = (*pool)[fd];
+        int ret = 0;
 
-        // write into the wbuf
-        memcpy(conn->wbuf, conn->rbuf, conn->rbuf_size);
-        conn->wbuf_size = conn->rbuf_size;
-
-        int count = send(fd, conn->wbuf, conn->wbuf_size, 0);
-        if (count < 0)
+        if (conn->status.status == 2)
         {
-            perror("error send");
-            if (conn->servers->del_fd(fd) == -1)
+            int count = send(fd, conn->wbuf, kv_protocal::HEADER_SIZE + conn->wbuf_size, 0);
+            if (count < 0)
             {
-                perror("error del_fd");
+                perror("error send");
+                ret = -1;
+                goto clean;
             }
-            pool->clean_up_conn(fd);
-            return -1;
+
+            if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
+            {
+                perror("error set_event");
+                ret = -1;
+                goto clean;
+            }
         }
-        if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
+        else
         {
-            perror("error set_event");
-            if (conn->servers->del_fd(fd) == -1)
-            {
-                perror("error del_fd");
-            }
-            pool->clean_up_conn(fd);
-            return -1;
+            perror("Error send status");
+            ret = -1;
+            goto clean;
         }
 
-        // printf("send: %ld, %s\n", conn->wbuf_size, conn->wbuf);
+        conn->status.status = 0;
+        if (conn->wbuf != nullptr)
+        {
+            allocator::kv_free(conn->wbuf);
+            conn->wbuf = nullptr;
+        }
+        conn->wbuf_size = 0;
 
-        return 0;
+        return ret;
+    clean:
+        if (conn->servers->del_fd(fd) == -1)
+        {
+            perror("error del_fd");
+        }
+        pool->clean_up_conn(fd);
+        return ret;
     }
 }

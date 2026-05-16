@@ -1,8 +1,10 @@
 #include "coroutine_server.h"
+#include "allocator.h"
+#include "status.h"
 
 namespace hpc_coroutine
 {
-    void server(void *arg);
+    void server(int fd);
 
     int TcpServers::init()
     {
@@ -23,7 +25,7 @@ namespace hpc_coroutine
         for (int i = 0; i < PORT_NUM; i++)
         {
             if (_fd_list[i] != -1)
-                hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server, &_fd_list[i]);
+                hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server, _fd_list[i]);
         }
 
         hpc_coroutine::CoroutineSched::get_coroutine_sched()->run();
@@ -60,38 +62,97 @@ namespace hpc_coroutine
         return fd;
     }
 
-    void server_process(void *arg)
+    void server_process(int fd)
     {
-        int fd = *(int *)arg;
-        free(arg);
         int ret = 0;
-        struct network::StatusM status_m;
 
         while (1)
         {
-            char buf[1024] = {0};
-            ret = recv(fd, buf, 1024, 0);
-            if (ret > 0)
+            // process header
+            struct network::StatusM status;
+            struct kv_protocal::KvHeader header;
+            char *rbuf;
+            char *wbuf;
+            memset(&header, 0, kv_protocal::HEADER_SIZE);
+            memset(&status, 0, sizeof(status));
+
+            int count = recv(fd, &header, kv_protocal::HEADER_SIZE, 0);
+            if (count == 0)
             {
-                ret = send(fd, buf, strlen(buf), 0);
-                if (ret == -1)
-                {
-                    close(fd);
-                    break;
-                }
+                close(fd);
+                break;
             }
-            else if (ret == 0)
+            else if (count < 0)
             {
+                perror("error recv");
+                close(fd);
+                break;
+            }
+
+            if (count != kv_protocal::HEADER_SIZE)
+            {
+                perror("Corrupted header");
+                close(fd);
+                break;
+            }
+
+            if (kv_protocal::KvStoreProtocal::instance().process_header(&status, &header) != 0)
+            {
+                perror("Corrupted header");
+                close(fd);
+                break;
+            }
+
+            rbuf = (char *)allocator::kv_malloc(status.buffer_size + 1);
+            if (rbuf == nullptr)
+            {
+                perror("Error allocate");
+                close(fd);
+                break;
+            }
+
+            int rbuf_size = recv(fd, rbuf, status.buffer_size, 0);
+            if (rbuf_size == 0)
+            {
+                close(fd);
+                break;
+            }
+            else if (rbuf_size < 0)
+            {
+                perror("error recv");
+                close(fd);
+                break;
+            }
+
+            if (rbuf_size != status.buffer_size)
+            {
+                perror("corrupted recv buffer");
+                close(fd);
+                break;
+            }
+
+            rbuf[status.buffer_size] = '\0';
+
+            int wbuf_size = kv_protocal::KvStoreProtocal::instance().process_body(&status, rbuf, status.buffer_size, &wbuf);
+            if (wbuf_size < 0)
+            {
+                perror("Error handling body");
+                close(fd);
+                break;
+            }
+
+            count = send(fd, wbuf, kv_protocal::HEADER_SIZE + wbuf_size, 0);
+            if (count <= 0)
+            {
+                perror("Error send");
                 close(fd);
                 break;
             }
         }
     }
 
-    void server(void *arg)
+    void server(int fd)
     {
-        int fd = *(int *)arg;
-
         struct sockaddr_in remote;
 
         struct timeval tv_begin;
@@ -115,10 +176,7 @@ namespace hpc_coroutine
             }
 #endif
             // printf("new client comming\n");
-
-            int *arg = (int *)malloc(sizeof(int));
-            *arg = cli_fd;
-            hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server_process, arg);
+            hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server_process, cli_fd);
         }
     }
 }

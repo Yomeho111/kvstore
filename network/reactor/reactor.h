@@ -23,9 +23,7 @@
 #include <signal.h>
 
 #include "status.h"
-#include "kv_protocal.h"
 
-#define BUFFER_SIZE 1024
 #define MAX_CONN_SIZE 1048576
 #ifndef PORT_NUM
 #define PORT_NUM 20
@@ -82,55 +80,6 @@ namespace reactor
 
         Conn _pool[MAX_CONN_SIZE] = {0};
     };
-
-    // class TcpServer
-    // {
-    // public:
-    //     TcpServer(uint16_t port) : _port(port) {}
-
-    //     int init_server();
-
-    //     ~TcpServer();
-
-    // private:
-    //     TcpServer(const TcpServer &) = delete;
-
-    //     TcpServer &operator=(const TcpServer &) = delete;
-
-    //     uint16_t _port;
-    //     int _listenfd; // listen fd
-    // };
-
-    // class EventLoop
-    // {
-    // public:
-    //     static EventLoop *get_epoll_item();
-
-    //     int set_event(int fd, uint32_t events, int ops);
-
-    //     int del_fd(int fd);
-
-    //     int init();
-
-    //     int start_loop();
-
-    // private:
-    //     EventLoop() : _epfd(-1) {}
-
-    //     EventLoop(const EventLoop &) = delete;
-    //     EventLoop(EventLoop &&) = delete;
-
-    //     EventLoop &operator=(const EventLoop &) = delete;
-    //     EventLoop &operator=(EventLoop &&) = delete;
-
-    //     ~EventLoop()
-    //     {
-    //         close(_epfd);
-    //     }
-
-    //     int _epfd;
-    //     ::epoll_event _events[1024];
-    // };
 
     class TcpServers
     {
