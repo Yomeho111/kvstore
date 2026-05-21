@@ -14,6 +14,9 @@ set_property(CACHE ENGINE PROPERTY STRINGS RBTREE_ENGINE)
 
 set(KVSTORE_PORT_NUM "20" CACHE STRING "Number of consecutive ports to listen on")
 option(KVSTORE_ENABLE_TIMER "Enable connection timing logs" OFF)
+option(ENABLE_MEMORY_POOL "Enable custom memory pool allocator" OFF)
+option(ENABLE_TCMALLOC "Link with tcmalloc" OFF)
+option(ENABLE_JEMALLOC "Link with jemalloc" OFF)
 
 string(TOUPPER "${NETWORK}" NETWORK)
 string(TOUPPER "${ENGINE}" ENGINE)
@@ -31,8 +34,24 @@ endif()
 
 find_package(Threads REQUIRED)
 
+if(ENABLE_TCMALLOC AND ENABLE_JEMALLOC)
+    message(FATAL_ERROR "ENABLE_TCMALLOC and ENABLE_JEMALLOC cannot both be ON")
+endif()
+
+if(ENABLE_TCMALLOC)
+    find_library(TCMALLOC_LIBRARY NAMES tcmalloc_minimal tcmalloc REQUIRED)
+endif()
+
+if(ENABLE_JEMALLOC)
+    find_library(JEMALLOC_LIBRARY NAMES jemalloc REQUIRED)
+endif()
+
 add_library(kvstore_core STATIC
     memory/allocator.cpp
+    memory/big_memory_allocator.cpp
+    memory/central_pool.cpp
+    memory/page_allocator.cpp
+    memory/thread_cache.cpp
     core_engine/rbtree_engine/rbtree_engine.cpp
 )
 
@@ -42,6 +61,7 @@ target_include_directories(kvstore_core
         ${PROJECT_SOURCE_DIR}/memory
         ${PROJECT_SOURCE_DIR}/network
         ${PROJECT_SOURCE_DIR}/protocal
+        ${PROJECT_SOURCE_DIR}/base_component/rbtree
 )
 
 target_compile_definitions(kvstore_core
@@ -50,6 +70,10 @@ target_compile_definitions(kvstore_core
         PORT_NUM=${KVSTORE_PORT_NUM}
 )
 
+if(ENABLE_MEMORY_POOL)
+    target_compile_definitions(kvstore_core PUBLIC ENABLE_MEMORY_POOL)
+endif()
+
 add_library(kvstore_backend STATIC)
 
 target_link_libraries(kvstore_backend
@@ -57,6 +81,14 @@ target_link_libraries(kvstore_backend
         kvstore_core
         Threads::Threads
 )
+
+if(ENABLE_TCMALLOC)
+    target_link_libraries(kvstore_backend PUBLIC ${TCMALLOC_LIBRARY})
+endif()
+
+if(ENABLE_JEMALLOC)
+    target_link_libraries(kvstore_backend PUBLIC ${JEMALLOC_LIBRARY})
+endif()
 
 if(KVSTORE_ENABLE_TIMER)
     target_compile_definitions(kvstore_backend PUBLIC TIMER)
@@ -107,3 +139,4 @@ add_executable(kvstore_client_testcase
     kvstore_client/testcase.cpp
     kvstore_client/client.cpp
 )
+target_link_libraries(kvstore_client_testcase PRIVATE kvstore_core)

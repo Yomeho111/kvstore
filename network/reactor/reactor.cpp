@@ -26,12 +26,12 @@ namespace reactor
         {
             if (_pool[i].rbuf != nullptr)
             {
-                free(_pool[i].rbuf);
+                allocator::kv_free(_pool[i].rbuf);
                 _pool[i].rbuf = nullptr;
             }
             if (_pool[i].wbuf != nullptr)
             {
-                free(_pool[i].wbuf);
+                allocator::kv_free(_pool[i].wbuf);
                 _pool[i].wbuf = nullptr;
             }
             if (_pool[i].is_used)
@@ -55,12 +55,12 @@ namespace reactor
         _pool[fd].servers = nullptr;
         if (_pool[fd].rbuf != nullptr)
         {
-            free(_pool[fd].rbuf);
+            allocator::kv_free(_pool[fd].rbuf);
             _pool[fd].rbuf = nullptr;
         }
         if (_pool[fd].wbuf != nullptr)
         {
-            free(_pool[fd].wbuf);
+            allocator::kv_free(_pool[fd].wbuf);
             _pool[fd].wbuf = nullptr;
         }
 
@@ -103,12 +103,12 @@ namespace reactor
 
         if (_pool[fd].rbuf != nullptr)
         {
-            free(_pool[fd].rbuf);
+            allocator::kv_free(_pool[fd].rbuf);
             _pool[fd].rbuf = nullptr;
         }
         if (_pool[fd].wbuf != nullptr)
         {
-            free(_pool[fd].wbuf);
+            allocator::kv_free(_pool[fd].wbuf);
             _pool[fd].wbuf = nullptr;
         }
 

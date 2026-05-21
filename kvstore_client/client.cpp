@@ -1,7 +1,48 @@
 #include "client.h"
+#include "allocator.h"
+
+#include <errno.h>
 
 namespace kv_client
 {
+    static int send_all(int fd, const char *buf, size_t len)
+    {
+        size_t sent = 0;
+        while (sent < len)
+        {
+            ssize_t ret = send(fd, buf + sent, len - sent, 0);
+            if (ret < 0)
+            {
+                if (errno == EINTR)
+                    continue;
+                return -1;
+            }
+            if (ret == 0)
+                return -1;
+            sent += static_cast<size_t>(ret);
+        }
+        return 0;
+    }
+
+    static int recv_all(int fd, char *buf, size_t len)
+    {
+        size_t received = 0;
+        while (received < len)
+        {
+            ssize_t ret = recv(fd, buf + received, len - received, 0);
+            if (ret < 0)
+            {
+                if (errno == EINTR)
+                    continue;
+                return -1;
+            }
+            if (ret == 0)
+                return -1;
+            received += static_cast<size_t>(ret);
+        }
+        return 0;
+    }
+
     int KvClient::init()
     {
         _fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -32,7 +73,7 @@ namespace kv_client
 
         size_t buf_size = command.size() + HEADER_SIZE;
 
-        char *buf = (char *)malloc(buf_size);
+        char *buf = (char *)allocator::kv_malloc(buf_size);
         if (buf == nullptr)
             return nullptr;
 
@@ -40,42 +81,30 @@ namespace kv_client
 
         memcpy(buf + HEADER_SIZE, command.c_str(), command.size());
 
-        int ret = 0;
-
-        ret = send(_fd, buf, buf_size, 0);
-        if (ret < 0)
+        if (send_all(_fd, buf, buf_size) != 0)
         {
             perror("Error send");
             goto clean;
         }
 
+        allocator::kv_free(buf);
+        buf = nullptr;
+
         memset(&header, 0, HEADER_SIZE);
 
-        ret = recv(_fd, &header, HEADER_SIZE, 0);
-        if (ret == 0)
-        {
-            printf("Connection Error\n");
-            goto clean;
-        }
-        else if (ret < 0)
+        if (recv_all(_fd, reinterpret_cast<char *>(&header), HEADER_SIZE) != 0)
         {
             perror("Error recv");
             goto clean;
         }
 
-        buf = (char *)realloc(buf, header.body_length + 1);
+        buf = (char *)allocator::kv_malloc(header.body_length + 1);
         if (buf == nullptr)
         {
             goto clean;
         }
 
-        ret = recv(_fd, buf, header.body_length, 0);
-        if (ret == 0)
-        {
-            printf("Connection Error\n");
-            goto clean;
-        }
-        else if (ret < 0)
+        if (recv_all(_fd, buf, header.body_length) != 0)
         {
             perror("Error recv");
             goto clean;
@@ -85,7 +114,7 @@ namespace kv_client
 
         return buf;
     clean:
-        free(buf);
+        allocator::kv_free(buf);
         return nullptr;
     }
 }

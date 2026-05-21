@@ -12,17 +12,7 @@ using string = std::basic_string<
     std::char_traits<char>,
     allocator::MyAllocator<char>>;
 
-template <>
-struct TreeNode<string, string> : public TreeNodeBase<TreeNode<string, string>>
-{
-    string key{};
-    string value{};
-    TreeNode(const string &k, const string &v) : TreeNodeBase(), key(k), value(v) {}
-    TreeNode() : TreeNodeBase() {}
-    using type = string;
-};
-
-using Node = TreeNode<string, string>;
+using Node = base_component::TreeNode<string, string>;
 
 namespace kv_engine
 {
@@ -41,7 +31,7 @@ namespace kv_engine
         int exist(char *key, size_t key_len) override;
 
     private:
-        RBTree<string, string> rbt;
+        base_component::RBTree<string, string> rbt;
     };
 }
 

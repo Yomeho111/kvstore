@@ -1,6 +1,8 @@
 #include "rbtree_engine.h"
 #include <string.h>
 
+#include "slab.hpp"
+
 namespace kv_engine
 {
     int RbtreeEngine::set(char *key, size_t key_len, char *value, size_t val_len)
@@ -17,8 +19,7 @@ namespace kv_engine
         if (node)
             return 1;
 
-        node = new Node(key_s, val_s);
-        rbt.insert(node);
+        rbt.insert(key_s, val_s);
 
         return 0;
     }
@@ -70,11 +71,8 @@ namespace kv_engine
         if (key_s.size() == 0)
             return -1;
 
-        auto *node = rbt.get_node(key_s);
-        if (node == nullptr)
+        if (rbt.delNode(key_s) == -1)
             return 1;
-
-        rbt.delNode(node);
         return 0;
     }
 

@@ -12,7 +12,7 @@
 #include "rbtree_engine/rbtree_engine.h"
 #include "allocator.h"
 
-#define MAX_BODY_SIZE 4096
+// #define MAX_BODY_SIZE 4096
 #define MAX_TOKEN_SIZE 3
 #define BUFFER_SIZE 128
 
@@ -63,8 +63,8 @@ namespace kv_protocal
             // get body length
             uint16_t body_length = header->body_length;
 
-            if (body_length > MAX_BODY_SIZE)
-                return -1;
+            // if (body_length > MAX_BODY_SIZE)
+            //     return -1;
 
             // change status to 1 for body recv
             status->status = 1;
@@ -74,7 +74,7 @@ namespace kv_protocal
 
         int process_body(struct network::StatusM *status, char *body, size_t body_length, char **response)
         {
-            if (status == nullptr || body == nullptr || body_length > MAX_BODY_SIZE)
+            if (status == nullptr || body == nullptr) // body_length > MAX_BODY_SIZE
                 return -1;
 
             char *tokens[MAX_TOKEN_SIZE] = {0};
