@@ -41,7 +41,9 @@ namespace kv_protocal
 
     struct KvHeader
     {
-        uint16_t body_length;
+        uint32_t body_length;
+        uint32_t key_length;
+        uint32_t value_length;
     };
 
     constexpr inline const size_t HEADER_SIZE = sizeof(KvHeader);
@@ -60,15 +62,16 @@ namespace kv_protocal
         {
             if (status == nullptr || header == nullptr)
                 return -1;
-            // get body length
-            uint16_t body_length = header->body_length;
 
             // if (body_length > MAX_BODY_SIZE)
             //     return -1;
 
             // change status to 1 for body recv
             status->status = 1;
-            status->buffer_size = body_length;
+            status->buffer_size = header->body_length;
+            status->sent_data = 0;
+            status->key_length = header->key_length;
+            status->value_length = header->value_length;
             return 0;
         }
 
@@ -79,16 +82,13 @@ namespace kv_protocal
 
             char *tokens[MAX_TOKEN_SIZE] = {0};
 
-            int count = _split_token(body, tokens);
+            uint32_t command_length = status->buffer_size - status->key_length - status->value_length;
+
+            int count = _split_token(body, tokens, command_length, status->key_length, status->value_length);
             if (count == -1)
                 return -1;
-            else if (count == -2)
-            {
-                perror("Error body, invalid space");
-                return -1;
-            }
 
-            int wbuf_size = _process_tokens(tokens, response);
+            int wbuf_size = _process_tokens(tokens, response, command_length, status->key_length, status->value_length);
             if (wbuf_size == -1)
                 return -1;
 
@@ -101,26 +101,28 @@ namespace kv_protocal
         KvProtocal() {}
         ~KvProtocal() {}
 
-        int _split_token(char *body, char **tokens)
+        int _split_token(char *body, char **tokens, uint32_t command_length, uint32_t key_length, uint32_t value_length)
         {
             if (body == nullptr || tokens == nullptr)
                 return -1;
 
-            int idx = 0;
-            char *token = strtok(body, " ");
+            if (command_length == 0)
+                return -1;
 
-            while (token != nullptr)
+            tokens[0] = body;
+            if (key_length == 0)
+                return -1;
+            tokens[1] = body + command_length;
+
+            if (value_length > 0)
             {
-                if (idx >= MAX_TOKEN_SIZE)
-                    return -2;
-                tokens[idx++] = token;
-                token = strtok(nullptr, " ");
+                tokens[2] = tokens[1] + key_length;
+                return 3;
             }
-
-            return idx;
+            return 2;
         }
 
-        int _process_tokens(char **tokens, char **response)
+        int _process_tokens(char **tokens, char **response, uint32_t command_length, uint32_t key_length, uint32_t value_length)
         {
             if (tokens == nullptr || response == nullptr)
                 return -1;
@@ -129,7 +131,7 @@ namespace kv_protocal
 
             for (; cmd < KVS_END; cmd++)
             {
-                if (strcmp(tokens[0], command[cmd]) == 0)
+                if (strncmp(tokens[0], command[cmd], command_length) == 0)
                     break;
             }
 
@@ -146,7 +148,7 @@ namespace kv_protocal
             {
             case KVS_SET:
             {
-                ret = _engine.set(key, strlen(key), value, strlen(value));
+                ret = _engine.set(key, key_length, value, value_length);
                 if (ret == 0)
                     wbuf_size = snprintf(wbuf, BUFFER_SIZE, "OK\r\n");
                 else if (ret < 0)
@@ -157,7 +159,7 @@ namespace kv_protocal
             }
             case KVS_GET:
             {
-                ret = _engine.get(key, strlen(key), &value);
+                ret = _engine.get(key, key_length, &value);
                 if (ret > 0)
                     wbuf_size = ret;
                 else if (ret < 0)
@@ -168,7 +170,7 @@ namespace kv_protocal
             }
             case KVS_MOD:
             {
-                ret = _engine.modify(key, strlen(key), value, strlen(value));
+                ret = _engine.modify(key, key_length, value, value_length);
                 if (ret == 0)
                     wbuf_size = snprintf(wbuf, BUFFER_SIZE, "OK\r\n");
                 else if (ret < 0)
@@ -179,7 +181,7 @@ namespace kv_protocal
             }
             case KVS_DEL:
             {
-                ret = _engine.del(key, strlen(key));
+                ret = _engine.del(key, key_length);
                 if (ret == 0)
                     wbuf_size = snprintf(wbuf, BUFFER_SIZE, "OK\r\n");
                 else if (ret < 0)
@@ -190,7 +192,7 @@ namespace kv_protocal
             }
             case KVS_EXIST:
             {
-                ret = _engine.exist(key, strlen(key));
+                ret = _engine.exist(key, key_length);
                 if (ret == 0)
                     wbuf_size = snprintf(wbuf, BUFFER_SIZE, "EXIST\r\n");
                 else if (ret < 0)
@@ -204,7 +206,7 @@ namespace kv_protocal
                 break;
             }
 
-            header.body_length = static_cast<uint16_t>(wbuf_size);
+            header.body_length = static_cast<uint32_t>(wbuf_size);
             *response = (char *)allocator::kv_malloc(kv_protocal::HEADER_SIZE + wbuf_size);
 
             memcpy(*response, &header, sizeof(header));

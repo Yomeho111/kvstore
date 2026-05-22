@@ -3,13 +3,12 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <string.h>
 
 #define NEW_PAGE_FACTOR 2
 
 namespace memory
 {
-
-    using FreeListNode = base_component::TreeNode<size_t, char *>;
 
     PageAllocator &PageAllocator::instance()
     {
@@ -42,14 +41,14 @@ namespace memory
     void *PageAllocator::alloc_page(size_t num_pages)
     {
         std::lock_guard lk{mtx_};
-        auto *avail_node = free_list_.get_lower_bound(num_pages);
-        if (avail_node && avail_node->value)
+        auto avail_node = free_list_.lower_bound(num_pages);
+        if (avail_node != free_list_.end() && avail_node->second)
         {
-            size_t cur_page_num = avail_node->key;
-            char *cur_page = avail_node->value;
+            size_t cur_page_num = avail_node->first;
+            char *cur_page = avail_node->second;
 
             // get the pages out of the tree
-            avail_node->value = *(char **)cur_page;
+            avail_node->second = *(char **)cur_page;
             *(char **)cur_page = nullptr;
 
             // split the page if the cur_page size is bigger than we want
@@ -80,16 +79,16 @@ namespace memory
     {
         if (page == nullptr || num_pages == 0)
             return;
-        auto *node = free_list_.get_node(num_pages);
-        if (node)
+        auto node = free_list_.find(num_pages);
+        if (node != free_list_.end())
         {
-            *(char **)page = node->value;
-            node->value = page;
+            *(char **)page = node->second;
+            node->second = page;
         }
         else
         {
             *(char **)page = nullptr;
-            free_list_.insert(num_pages, page);
+            free_list_[num_pages] = page;
         }
     }
 

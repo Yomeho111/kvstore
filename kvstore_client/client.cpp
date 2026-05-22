@@ -2,25 +2,41 @@
 #include "allocator.h"
 
 #include <errno.h>
+#include <sys/uio.h>
 
 namespace kv_client
 {
-    static int send_all(int fd, const char *buf, size_t len)
+
+    static int writev_all(int fd, struct iovec *iov, int iovcnt)
     {
-        size_t sent = 0;
-        while (sent < len)
+        int current = 0;
+
+        while (current < iovcnt)
         {
-            ssize_t ret = send(fd, buf + sent, len - sent, 0);
-            if (ret < 0)
+            ssize_t n = writev(fd, &iov[current], iovcnt - current);
+            if (n < 0)
             {
                 if (errno == EINTR)
+                {
                     continue;
+                }
                 return -1;
             }
-            if (ret == 0)
-                return -1;
-            sent += static_cast<size_t>(ret);
+
+            ssize_t remaining = n;
+            while (current < iovcnt && remaining >= static_cast<ssize_t>(iov[current].iov_len))
+            {
+                remaining -= static_cast<ssize_t>(iov[current].iov_len);
+                ++current;
+            }
+
+            if (current < iovcnt && remaining > 0)
+            {
+                iov[current].iov_base = static_cast<char *>(iov[current].iov_base) + remaining;
+                iov[current].iov_len -= remaining;
+            }
         }
+
         return 0;
     }
 
@@ -64,57 +80,66 @@ namespace kv_client
         return 0;
     }
 
-    char *KvClient::submit_request(const std::string &command)
+    char *KvClient::submit_request(const string &command,
+                                   const string &key,
+                                   const string &value)
     {
-        struct KvHeader header;
-        memset(&header, 0, HEADER_SIZE);
+        const bool has_value = !value.empty();
 
-        header.body_length = static_cast<uint16_t>(command.size());
+        kv_protocal::KvHeader header{};
+        header.body_length =
+            static_cast<uint32_t>(command.size() + key.size() + value.size());
+        header.key_length = static_cast<uint32_t>(key.size());
+        header.value_length = static_cast<uint32_t>(value.size());
 
-        size_t buf_size = command.size() + HEADER_SIZE;
+        // ---------- send (scatter/gather, zero copy) ----------
+        struct iovec iov[4];
+        int iovcnt = 0;
 
-        char *buf = (char *)allocator::kv_malloc(buf_size);
-        if (buf == nullptr)
-            return nullptr;
+        iov[iovcnt++] = {&header, kv_protocal::HEADER_SIZE};
 
-        memcpy(buf, &header, HEADER_SIZE);
+        if (!command.empty())
+            iov[iovcnt++] = {const_cast<char *>(command.data()), command.size()};
 
-        memcpy(buf + HEADER_SIZE, command.c_str(), command.size());
+        if (!key.empty())
+            iov[iovcnt++] = {const_cast<char *>(key.data()), key.size()};
 
-        if (send_all(_fd, buf, buf_size) != 0)
+        if (has_value)
+            iov[iovcnt++] = {const_cast<char *>(value.data()), value.size()};
+
+        if (writev_all(_fd, iov, iovcnt) != 0)
         {
             perror("Error send");
-            goto clean;
+            return nullptr;
         }
 
-        allocator::kv_free(buf);
-        buf = nullptr;
-
-        memset(&header, 0, HEADER_SIZE);
-
-        if (recv_all(_fd, reinterpret_cast<char *>(&header), HEADER_SIZE) != 0)
+        // ---------- recv header ----------
+        kv_protocal::KvHeader resp_header{};
+        if (recv_all(_fd,
+                     reinterpret_cast<char *>(&resp_header),
+                     kv_protocal::HEADER_SIZE) != 0)
         {
-            perror("Error recv");
-            goto clean;
+            perror("Error recv header");
+            return nullptr;
         }
 
-        buf = (char *)allocator::kv_malloc(header.body_length + 1);
-        if (buf == nullptr)
+        // ---------- recv body ----------
+        char *buf = static_cast<char *>(
+            allocator::kv_malloc(resp_header.body_length + 1));
+        if (!buf)
         {
-            goto clean;
+            return nullptr;
         }
 
-        if (recv_all(_fd, buf, header.body_length) != 0)
+        if (recv_all(_fd, buf, resp_header.body_length) != 0)
         {
-            perror("Error recv");
-            goto clean;
+            perror("Error recv body");
+            allocator::kv_free(buf);
+            return nullptr;
         }
 
-        buf[header.body_length] = '\0';
-
+        buf[resp_header.body_length] = '\0';
         return buf;
-    clean:
-        allocator::kv_free(buf);
-        return nullptr;
     }
+
 }

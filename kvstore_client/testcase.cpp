@@ -3,19 +3,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/time.h>
+#include <string>
 
 #include "allocator.h"
 
 #define TIME_SUB_MS(tv1, tv2) ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
 
-void testcase(kv_client::KvClient &client, const char *command, const char *pattern, const char *casename)
+using string = std::basic_string<
+    char,
+    std::char_traits<char>,
+    allocator::MyAllocator<char>>;
+
+void testcase(kv_client::KvClient &client, const string &command, const string &key, const string &value, const char *pattern, const char *casename)
 {
-    if (!command || !pattern)
+    if (command.size() == 0 || key.size() == 0 || !pattern)
         return;
-    char *response = client.submit_request(command);
+    char *response = client.submit_request(command, key, value);
     if (response == nullptr)
     {
-        printf("==> FAILED -> %s, no response for command '%s'\n", casename, command);
+        printf("==> FAILED -> %s, no response for command '%s'\n", casename, command.c_str());
         exit(1);
     }
 
@@ -35,15 +41,15 @@ void testcase(kv_client::KvClient &client, const char *command, const char *patt
 void testcase1(kv_client::KvClient &client)
 {
 
-    testcase(client, "SET Teacher King", "OK\r\n", "SET-Teacher");
-    testcase(client, "GET Teacher", "King\r\n", "GET-Teacher");
-    testcase(client, "MOD Teacher Darren", "OK\r\n", "MOD-Teacher");
-    testcase(client, "GET Teacher", "Darren\r\n", "GET-Teacher");
-    testcase(client, "EXIST Teacher", "EXIST\r\n", "GET-Teacher");
-    testcase(client, "DEL Teacher", "OK\r\n", "DEL-Teacher");
-    testcase(client, "GET Teacher", "NOT EXIST\r\n", "GET-Teacher");
-    testcase(client, "MOD Teacher KING", "NOT EXIST\r\n", "MOD-Teacher");
-    testcase(client, "EXIST Teacher", "NOT EXIST\r\n", "GET-Teacher");
+    testcase(client, "SET", "Teacher", "King", "OK\r\n", "SET-Teacher");
+    testcase(client, "GET", "Teacher", "", "King\r\n", "GET-Teacher");
+    testcase(client, "MOD", "Teacher", "Darren", "OK\r\n", "MOD-Teacher");
+    testcase(client, "GET", "Teacher", "", "Darren\r\n", "GET-Teacher");
+    testcase(client, "EXIST", "Teacher", "", "EXIST\r\n", "GET-Teacher");
+    testcase(client, "DEL", "Teacher", "", "OK\r\n", "DEL-Teacher");
+    testcase(client, "GET", "Teacher", "", "NOT EXIST\r\n", "GET-Teacher");
+    testcase(client, "MOD", "Teacher", "KING", "NOT EXIST\r\n", "MOD-Teacher");
+    testcase(client, "EXIST", "Teacher", "", "NOT EXIST\r\n", "GET-Teacher");
 }
 
 void testcase2(kv_client::KvClient &client)
@@ -56,36 +62,26 @@ void testcase2(kv_client::KvClient &client)
     }
     long_value[sizeof(long_value) - 1] = '\0';
 
-    // Build command buffers
-    static char cmd_set[14000];
-    static char cmd_mod[14000];
-
-    // SET BigKey <long_value>
-    snprintf(cmd_set, sizeof(cmd_set), "SET BigKey %s", long_value);
-
-    // MOD BigKey <long_value>
-    snprintf(cmd_mod, sizeof(cmd_mod), "MOD BigKey %s", long_value);
-
     // Expected GET response: "<value>\r\n"
     static char expected_get[14000];
     snprintf(expected_get, sizeof(expected_get), "%s\r\n", long_value);
 
     // -------- Testcases --------
 
-    testcase(client, cmd_set, "OK\r\n", "SET-BigKey");
-    testcase(client, "GET BigKey", expected_get, "GET-BigKey");
+    testcase(client, "SET", "BigKey", long_value, "OK\r\n", "SET-BigKey");
+    testcase(client, "GET", "BigKey", "", expected_get, "GET-BigKey");
 
-    testcase(client, cmd_mod, "OK\r\n", "MOD-BigKey");
-    testcase(client, "GET BigKey", expected_get, "GET-BigKey");
+    testcase(client, "MOD", "BigKey", long_value, "OK\r\n", "MOD-BigKey");
+    testcase(client, "GET", "BigKey", "", expected_get, "GET-BigKey");
 
-    testcase(client, "EXIST BigKey", "EXIST\r\n", "EXIST-BigKey");
+    testcase(client, "EXIST", "BigKey", "", "EXIST\r\n", "EXIST-BigKey");
 
-    testcase(client, "DEL BigKey", "OK\r\n", "DEL-BigKey");
+    testcase(client, "DEL", "BigKey", "", "OK\r\n", "DEL-BigKey");
 
-    testcase(client, "GET BigKey", "NOT EXIST\r\n", "GET-BigKey");
-    testcase(client, cmd_mod, "NOT EXIST\r\n", "MOD-BigKey");
+    testcase(client, "GET", "BigKey", "", "NOT EXIST\r\n", "GET-BigKey");
+    testcase(client, "MOD", "BigKey", long_value, "NOT EXIST\r\n", "MOD-BigKey");
 
-    testcase(client, "EXIST BigKey", "NOT EXIST\r\n", "EXIST-BigKey");
+    testcase(client, "EXIST", "BigKey", "", "NOT EXIST\r\n", "EXIST-BigKey");
 }
 
 void array_testcase_1w(kv_client::KvClient &client, void (*func)(kv_client::KvClient &))

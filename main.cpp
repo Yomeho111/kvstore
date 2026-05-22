@@ -6,8 +6,20 @@
 #include "my_coroutine/coroutine_server.h"
 #endif
 
+#include <signal.h>
+
+void handler(int sig)
+{
+    return;
+}
+
 int main()
 {
+    for (int ii = 0; ii <= 64; ii++)
+        signal(ii, SIG_IGN);
+    signal(SIGTERM, handler);
+    signal(SIGINT, handler);
+
 #ifdef REACTOR
     reactor::TcpServers servers(8050);
     servers.init();

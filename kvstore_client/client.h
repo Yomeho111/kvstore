@@ -20,15 +20,15 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
+#include "kv_protocal.hpp"
+
+using string = std::basic_string<
+    char,
+    std::char_traits<char>,
+    allocator::MyAllocator<char>>;
+
 namespace kv_client
 {
-    struct KvHeader
-    {
-        uint16_t body_length;
-    };
-
-    constexpr inline const size_t HEADER_SIZE = sizeof(KvHeader);
-
     class KvClient
     {
     public:
@@ -41,7 +41,7 @@ namespace kv_client
 
         int init();
 
-        char *submit_request(const std::string &command);
+        char *submit_request(const string &command, const string &key, const string &value);
 
     private:
         std::string _ip;

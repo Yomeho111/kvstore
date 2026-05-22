@@ -5,8 +5,7 @@
 #include <vector>
 #include <stddef.h>
 #include <stdint.h>
-#include "rbtree.hpp"
-#include "slab.hpp"
+#include <map>
 #include "memory_utils.h"
 
 namespace memory
@@ -41,7 +40,7 @@ namespace memory
         void _put_on_free_list(char *page, size_t num_pages);
 
         std::mutex mtx_;
-        base_component::RBTree<size_t, char *> free_list_;
+        std::map<size_t, char *> free_list_;
         std::vector<RawPage> reg_;
     };
 

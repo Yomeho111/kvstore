@@ -6,6 +6,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
+
+add_compile_options($<$<CONFIG:Debug>:-g> $<$<CONFIG:Debug>:-O0>)
+
 set(NETWORK "REACTOR" CACHE STRING "Network backend to build: REACTOR, PROACTOR, or CORROUTINE")
 set_property(CACHE NETWORK PROPERTY STRINGS REACTOR PROACTOR CORROUTINE)
 
@@ -17,6 +23,7 @@ option(KVSTORE_ENABLE_TIMER "Enable connection timing logs" OFF)
 option(ENABLE_MEMORY_POOL "Enable custom memory pool allocator" OFF)
 option(ENABLE_TCMALLOC "Link with tcmalloc" OFF)
 option(ENABLE_JEMALLOC "Link with jemalloc" OFF)
+option(ENABLE_CPP_EXCEPTIONS "Enable C++ exceptions" OFF)
 
 string(TOUPPER "${NETWORK}" NETWORK)
 string(TOUPPER "${ENGINE}" ENGINE)
@@ -44,6 +51,10 @@ endif()
 
 if(ENABLE_JEMALLOC)
     find_library(JEMALLOC_LIBRARY NAMES jemalloc REQUIRED)
+endif()
+
+if(NOT ENABLE_CPP_EXCEPTIONS)
+    add_compile_options($<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang>:-fno-exceptions>)
 endif()
 
 add_library(kvstore_core STATIC
