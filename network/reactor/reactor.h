@@ -19,8 +19,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
-
-#include <signal.h>
+#include <sys/uio.h>
 
 #include "status.h"
 
@@ -43,10 +42,8 @@ namespace reactor
         bool is_used;
         int fd;
         network::StatusM status;
-        size_t rbuf_size;
-        size_t wbuf_size;
-        char *rbuf;
-        char *wbuf;
+        struct ::iovec *r_iovec;
+        struct ::iovec *w_iovec;
         ReactorCallback recv_cb;
         ReactorCallback send_cb;
         TcpServers *servers;
@@ -69,6 +66,8 @@ namespace reactor
         int setup_accept_conn(int fd, TcpServers *servers);
 
         int setup_client_conn(int fd, TcpServers *servers);
+
+        void clean_up_r_w(int fd);
 
     private:
         ConnPool() {}

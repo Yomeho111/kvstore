@@ -2,6 +2,9 @@
 #include "allocator.h"
 #include "status.h"
 
+#include <errno.h>
+#include <sys/uio.h>
+
 namespace hpc_coroutine
 {
     void server(int fd);
@@ -64,87 +67,123 @@ namespace hpc_coroutine
 
     void server_process(int fd)
     {
-        int ret = 0;
-
         while (1)
         {
-            // process header
             struct network::StatusM status;
-            struct kv_protocal::KvHeader header;
-            char *rbuf;
-            char *wbuf;
-            memset(&header, 0, kv_protocal::HEADER_SIZE);
+            struct kv_protocal::NumHeader num_header;
+            struct iovec *r_iovec = nullptr;
+            struct iovec *w_iovec = nullptr;
+            bool should_close = false;
+            size_t header_size = 0;
+            int process_count = 0;
+
             memset(&status, 0, sizeof(status));
+            memset(&num_header, 0, kv_protocal::NUM_HEADER_SIZE);
+            status.status = network::READ_NUM_REQUEST;
 
-            int count = recv(fd, &header, kv_protocal::HEADER_SIZE, 0);
-            if (count == 0)
+            int ret = recv(fd, &num_header, sizeof(struct kv_protocal::NumHeader), 0);
+            if (ret <= 0)
             {
+                if (ret < 0)
+                    perror("error recv");
                 close(fd);
-                break;
-            }
-            else if (count < 0)
-            {
-                perror("error recv");
-                close(fd);
-                break;
+                return;
             }
 
-            if (count != kv_protocal::HEADER_SIZE)
+            if (kv_protocal::KvStoreProtocal::instance().process_num_request(&status, num_header.num_request) != 0)
             {
-                perror("Corrupted header");
-                close(fd);
-                break;
+                perror("Processing number of request failure");
+                should_close = true;
+                goto clean;
             }
 
-            if (kv_protocal::KvStoreProtocal::instance().process_header(&status, &header) != 0)
+            header_size = status.num_request * kv_protocal::HEADER_SIZE;
+            status.req_info = (kv_protocal::RequestInfo *)allocator::kv_malloc(header_size);
+            if (status.req_info == nullptr)
             {
-                perror("Corrupted header");
-                close(fd);
-                break;
+                perror("Error Memory allocation");
+                goto clean;
             }
 
-            rbuf = (char *)allocator::kv_malloc(status.buffer_size + 1);
-            if (rbuf == nullptr)
+            ret = recv(fd, status.req_info, header_size, 0);
+            if (ret <= 0)
             {
-                perror("Error allocate");
-                close(fd);
-                break;
+                if (ret < 0)
+                    perror("error recv");
+                should_close = true;
+                goto clean;
             }
 
-            int rbuf_size = recv(fd, rbuf, status.buffer_size, 0);
-            if (rbuf_size == 0)
+            if (kv_protocal::KvStoreProtocal::instance().process_header(&status, &r_iovec) != 0)
             {
-                close(fd);
-                break;
-            }
-            else if (rbuf_size < 0)
-            {
-                perror("error recv");
-                close(fd);
-                break;
+                perror("Processing header failure");
+                should_close = true;
+                goto clean;
             }
 
-            if (rbuf_size != status.buffer_size)
+            ret = readv_full(fd, r_iovec, status.num_request);
+            if (ret <= 0)
             {
-                perror("corrupted recv buffer");
-                close(fd);
-                break;
+                if (ret < 0)
+                    perror("error read");
+                should_close = true;
+                goto clean;
             }
 
-            rbuf[status.buffer_size] = '\0';
-
-            int wbuf_size = kv_protocal::KvStoreProtocal::instance().process_body(&status, rbuf, status.buffer_size, &wbuf);
-            if (wbuf_size < 0)
+            process_count = kv_protocal::KvStoreProtocal::instance().process_body(&status, r_iovec, &w_iovec);
+            if (process_count < 0)
             {
                 perror("Error handling body");
-                close(fd);
-                break;
+                should_close = true;
+                goto clean;
             }
 
-            count = send(fd, wbuf, kv_protocal::HEADER_SIZE + wbuf_size, 0);
-            if (count <= 0)
+            ret = writev_all(fd, w_iovec, status.w_iovec_size);
+            if (ret <= 0)
             {
-                perror("Error send");
+                if (ret < 0)
+                    perror("Error write");
+                should_close = true;
+                goto clean;
+            }
+
+        clean:
+            if (status.req_info != nullptr)
+            {
+                allocator::kv_free(status.req_info);
+                status.req_info = nullptr;
+            }
+
+            if (r_iovec != nullptr)
+            {
+                for (uint32_t i = 0; i < status.num_request; i++)
+                {
+                    if (r_iovec[i].iov_base != nullptr)
+                    {
+                        allocator::kv_free(r_iovec[i].iov_base);
+                        r_iovec[i].iov_base = nullptr;
+                    }
+                }
+                allocator::kv_free(r_iovec);
+                r_iovec = nullptr;
+            }
+
+            if (w_iovec != nullptr)
+            {
+                for (uint32_t i = 0; i < status.w_iovec_size; i++)
+                {
+                    if (w_iovec[i].iov_base != nullptr)
+                    {
+                        allocator::kv_free(w_iovec[i].iov_base);
+                        w_iovec[i].iov_base = nullptr;
+                    }
+                }
+                allocator::kv_free(w_iovec);
+                w_iovec = nullptr;
+            }
+
+            if (should_close)
+            {
                 close(fd);
                 break;
             }

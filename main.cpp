@@ -2,15 +2,18 @@
 #include "reactor/reactor.h"
 #elif defined(PROACTOR)
 #include "proactor/uring_tcp.h"
-#elif defined(CORROUTINE)
+#elif defined(COROUTINE)
 #include "my_coroutine/coroutine_server.h"
 #endif
 
 #include <signal.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 void handler(int sig)
 {
-    return;
+    printf("Close the server with %d\n", sig);
+    exit(sig);
 }
 
 int main()
@@ -30,7 +33,7 @@ int main()
     servers.init();
 
     servers.start_eventloop();
-#elif defined(CORROUTINE)
+#elif defined(COROUTINE)
     hpc_coroutine::TcpServers servers(8050);
     servers.init();
 

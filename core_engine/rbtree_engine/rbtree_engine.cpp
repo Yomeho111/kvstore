@@ -38,6 +38,8 @@ namespace kv_engine
             return 0;
 
         *value = (char *)allocator::kv_malloc(node->value.size() + 2);
+        if (*value == nullptr)
+            return -2;
         memcpy(*value, node->value.c_str(), node->value.size());
         memcpy(*value + node->value.size(), "\r\n", 2);
 

@@ -27,7 +27,12 @@ int main(int argc, char **argv)
     {
         std::getline(std::cin, s);
         char *response = client_ins.submit_request(s);
+        if (response == nullptr)
+        {
+            std::cout << "ERROR" << std::endl;
+            continue;
+        }
         std::cout << response << std::endl;
-        free(response);
+        allocator::kv_free(response);
     }
 }

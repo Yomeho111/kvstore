@@ -14,42 +14,64 @@ using string = std::basic_string<
     std::char_traits<char>,
     allocator::MyAllocator<char>>;
 
-void testcase(kv_client::KvClient &client, const string &command, const string &key, const string &value, const char *pattern, const char *casename)
+void batch_testcase(kv_client::KvClient &client, const kv_client::KvRequest *requests, const char **patterns, uint32_t count, const char *casename)
 {
-    if (command.size() == 0 || key.size() == 0 || !pattern)
+    if (requests == nullptr || patterns == nullptr || count == 0 || casename == nullptr)
         return;
-    char *response = client.submit_request(command, key, value);
-    if (response == nullptr)
+
+    kv_client::KvBatchResponse response{};
+    if (client.submit_batch(requests, count, &response) != 0)
     {
-        printf("==> FAILED -> %s, no response for command '%s'\n", casename, command.c_str());
+        printf("==> FAILED -> %s, no batch response\n", casename);
         exit(1);
     }
 
-    if (strcmp(response, pattern) == 0)
+    if (response.num_response != count)
     {
-        // printf("==> PASS -> %s\n", casename);
-        allocator::kv_free(response);
-    }
-    else
-    {
-        printf("==> FAILED -> %s, '%s' != '%s' \n", casename, response, pattern);
-        allocator::kv_free(response);
+        printf("==> FAILED -> %s, response count %u != %u\n", casename, response.num_response, count);
+        kv_client::KvClient::free_batch_response(&response);
         exit(1);
     }
+
+    for (uint32_t i = 0; i < count; i++)
+    {
+        if (strcmp(response.responses[i].data, patterns[i]) != 0)
+        {
+            printf("==> FAILED -> %s[%u], '%s' != '%s' \n", casename, i, response.responses[i].data, patterns[i]);
+            kv_client::KvClient::free_batch_response(&response);
+            exit(1);
+        }
+    }
+
+    kv_client::KvClient::free_batch_response(&response);
 }
 
 void testcase1(kv_client::KvClient &client)
 {
+    kv_client::KvRequest requests[] = {
+        {"SET", "Teacher", "King"},
+        {"GET", "Teacher", ""},
+        {"MOD", "Teacher", "Darren"},
+        {"GET", "Teacher", ""},
+        {"EXIST", "Teacher", ""},
+        {"DEL", "Teacher", ""},
+        {"GET", "Teacher", ""},
+        {"MOD", "Teacher", "KING"},
+        {"EXIST", "Teacher", ""},
+    };
+    const char *patterns[] = {
+        "OK\r\n",
+        "King\r\n",
+        "OK\r\n",
+        "Darren\r\n",
+        "EXIST\r\n",
+        "OK\r\n",
+        "NOT EXIST\r\n",
+        "NOT EXIST\r\n",
+        "NOT EXIST\r\n",
+    };
 
-    testcase(client, "SET", "Teacher", "King", "OK\r\n", "SET-Teacher");
-    testcase(client, "GET", "Teacher", "", "King\r\n", "GET-Teacher");
-    testcase(client, "MOD", "Teacher", "Darren", "OK\r\n", "MOD-Teacher");
-    testcase(client, "GET", "Teacher", "", "Darren\r\n", "GET-Teacher");
-    testcase(client, "EXIST", "Teacher", "", "EXIST\r\n", "GET-Teacher");
-    testcase(client, "DEL", "Teacher", "", "OK\r\n", "DEL-Teacher");
-    testcase(client, "GET", "Teacher", "", "NOT EXIST\r\n", "GET-Teacher");
-    testcase(client, "MOD", "Teacher", "KING", "NOT EXIST\r\n", "MOD-Teacher");
-    testcase(client, "EXIST", "Teacher", "", "NOT EXIST\r\n", "GET-Teacher");
+    batch_testcase(client, requests, patterns, sizeof(requests) / sizeof(requests[0]), "batch-basic");
 }
 
 void testcase2(kv_client::KvClient &client)
@@ -68,20 +90,30 @@ void testcase2(kv_client::KvClient &client)
 
     // -------- Testcases --------
 
-    testcase(client, "SET", "BigKey", long_value, "OK\r\n", "SET-BigKey");
-    testcase(client, "GET", "BigKey", "", expected_get, "GET-BigKey");
+    kv_client::KvRequest requests[] = {
+        {"SET", "BigKey", long_value},
+        {"GET", "BigKey", ""},
+        {"MOD", "BigKey", long_value},
+        {"GET", "BigKey", ""},
+        {"EXIST", "BigKey", ""},
+        {"DEL", "BigKey", ""},
+        {"GET", "BigKey", ""},
+        {"MOD", "BigKey", long_value},
+        {"EXIST", "BigKey", ""},
+    };
+    const char *patterns[] = {
+        "OK\r\n",
+        expected_get,
+        "OK\r\n",
+        expected_get,
+        "EXIST\r\n",
+        "OK\r\n",
+        "NOT EXIST\r\n",
+        "NOT EXIST\r\n",
+        "NOT EXIST\r\n",
+    };
 
-    testcase(client, "MOD", "BigKey", long_value, "OK\r\n", "MOD-BigKey");
-    testcase(client, "GET", "BigKey", "", expected_get, "GET-BigKey");
-
-    testcase(client, "EXIST", "BigKey", "", "EXIST\r\n", "EXIST-BigKey");
-
-    testcase(client, "DEL", "BigKey", "", "OK\r\n", "DEL-BigKey");
-
-    testcase(client, "GET", "BigKey", "", "NOT EXIST\r\n", "GET-BigKey");
-    testcase(client, "MOD", "BigKey", long_value, "NOT EXIST\r\n", "MOD-BigKey");
-
-    testcase(client, "EXIST", "BigKey", "", "NOT EXIST\r\n", "EXIST-BigKey");
+    batch_testcase(client, requests, patterns, sizeof(requests) / sizeof(requests[0]), "batch-large-value");
 }
 
 void array_testcase_1w(kv_client::KvClient &client, void (*func)(kv_client::KvClient &))

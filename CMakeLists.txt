@@ -12,8 +12,8 @@ endif()
 
 add_compile_options($<$<CONFIG:Debug>:-g> $<$<CONFIG:Debug>:-O0>)
 
-set(NETWORK "REACTOR" CACHE STRING "Network backend to build: REACTOR, PROACTOR, or CORROUTINE")
-set_property(CACHE NETWORK PROPERTY STRINGS REACTOR PROACTOR CORROUTINE)
+set(NETWORK "REACTOR" CACHE STRING "Network backend to build: REACTOR, PROACTOR, or COROUTINE")
+set_property(CACHE NETWORK PROPERTY STRINGS REACTOR PROACTOR COROUTINE)
 
 set(ENGINE "RBTREE_ENGINE" CACHE STRING "Storage engine to build: RBTREE_ENGINE")
 set_property(CACHE ENGINE PROPERTY STRINGS RBTREE_ENGINE)
@@ -28,7 +28,7 @@ option(ENABLE_CPP_EXCEPTIONS "Enable C++ exceptions" OFF)
 string(TOUPPER "${NETWORK}" NETWORK)
 string(TOUPPER "${ENGINE}" ENGINE)
 
-set(KVSTORE_NETWORK_OPTIONS REACTOR PROACTOR CORROUTINE)
+set(KVSTORE_NETWORK_OPTIONS REACTOR PROACTOR COROUTINE)
 set(KVSTORE_ENGINE_OPTIONS RBTREE_ENGINE)
 
 if(NOT NETWORK IN_LIST KVSTORE_NETWORK_OPTIONS)
@@ -63,6 +63,7 @@ add_library(kvstore_core STATIC
     memory/central_pool.cpp
     memory/page_allocator.cpp
     memory/thread_cache.cpp
+    network/network_utils.cpp
     core_engine/rbtree_engine/rbtree_engine.cpp
 )
 
@@ -126,7 +127,7 @@ elseif(NETWORK STREQUAL "PROACTOR")
     )
     target_compile_definitions(kvstore_backend PUBLIC PROACTOR)
     target_link_libraries(kvstore_backend PUBLIC ${LIBURING_LIBRARY})
-elseif(NETWORK STREQUAL "CORROUTINE")
+elseif(NETWORK STREQUAL "COROUTINE")
     target_sources(kvstore_backend PRIVATE
         network/my_coroutine/coroutine_server.cpp
         network/my_coroutine/my_coroutine/hpc_coroutine.cpp
@@ -137,14 +138,20 @@ elseif(NETWORK STREQUAL "CORROUTINE")
         ${PROJECT_SOURCE_DIR}/network/my_coroutine
         ${PROJECT_SOURCE_DIR}/network/my_coroutine/my_coroutine
     )
-    target_compile_definitions(kvstore_backend PUBLIC CORROUTINE)
+    target_compile_definitions(kvstore_backend PUBLIC COROUTINE)
     target_link_libraries(kvstore_backend PUBLIC ${CMAKE_DL_LIBS})
 else()
-    message(FATAL_ERROR "Unsupported NETWORK='${NETWORK}'. Use REACTOR, PROACTOR, or CORROUTINE.")
+    message(FATAL_ERROR "Unsupported NETWORK='${NETWORK}'. Use REACTOR, PROACTOR, or COROUTINE.")
 endif()
 
 add_executable(kvstore main.cpp)
 target_link_libraries(kvstore PRIVATE kvstore_backend)
+
+add_executable(kvstore_client
+    kvstore_client/main.cpp
+    kvstore_client/client.cpp
+)
+target_link_libraries(kvstore_client PRIVATE kvstore_core)
 
 add_executable(kvstore_client_testcase
     kvstore_client/testcase.cpp

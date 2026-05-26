@@ -2,6 +2,8 @@
 #define __HPC_SOCKET_H
 #include <sys/socket.h>
 #include <netinet/tcp.h>
+#include <stdint.h>
+#include <sys/uio.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -37,6 +39,10 @@ extern "C"
     int close(int fd);
 
     int connect(int fd, const struct sockaddr *addr, socklen_t addrlen);
+
+    ssize_t readv_full(int fd, const struct ::iovec *iov, int iovcnt);
+
+    ssize_t writev_all(int fd, const struct ::iovec *iov, int iovcnt);
 
 #ifdef __cplusplus
 }

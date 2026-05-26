@@ -1,5 +1,5 @@
-#ifndef __UTILS_H
-#define __UTILS_H
+#ifndef KVSTORE_MEMORY_UTILS_H
+#define KVSTORE_MEMORY_UTILS_H
 
 #include <atomic>
 #include <stddef.h>
@@ -75,4 +75,4 @@ namespace memory
     };
 }
 
-#endif // __UTILS_H
+#endif // KVSTORE_MEMORY_UTILS_H

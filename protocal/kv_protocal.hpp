@@ -5,48 +5,22 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdio.h>
+#include <sys/uio.h>
+#include <unistd.h>
 
 #include "status.h"
 #include "engine_interface.h"
 #include "status.h"
 #include "rbtree_engine/rbtree_engine.h"
 #include "allocator.h"
+#include "kv_header.h"
 
 // #define MAX_BODY_SIZE 4096
-#define MAX_TOKEN_SIZE 3
+#define MAX_TOKEN_SIZE 2
 #define BUFFER_SIZE 128
 
 namespace kv_protocal
 {
-    inline constexpr const char *command[] = {
-        "START",
-        "SET",
-        "GET",
-        "DEL",
-        "MOD",
-        "EXIST",
-        "END",
-    };
-
-    enum CommandIdx
-    {
-        KVS_START = 0,
-        KVS_SET,
-        KVS_GET,
-        KVS_DEL,
-        KVS_MOD,
-        KVS_EXIST,
-        KVS_END,
-    };
-
-    struct KvHeader
-    {
-        uint32_t body_length;
-        uint32_t key_length;
-        uint32_t value_length;
-    };
-
-    constexpr inline const size_t HEADER_SIZE = sizeof(KvHeader);
 
     template <typename KvEngine>
     class KvProtocal
@@ -58,93 +32,138 @@ namespace kv_protocal
             return prot;
         }
 
-        int process_header(struct network::StatusM *status, struct KvHeader *header)
+        int process_num_request(struct network::StatusM *status, uint32_t num_request)
         {
-            if (status == nullptr || header == nullptr)
+            if (status == nullptr || num_request == 0)
                 return -1;
 
-            // if (body_length > MAX_BODY_SIZE)
-            //     return -1;
+            status->status = network::READ_HEADER;
+            status->num_request = num_request;
+            status->req_info = (RequestInfo *)allocator::kv_malloc(num_request * sizeof(RequestInfo));
+            if (status->req_info == nullptr)
+                return -2;
 
-            // change status to 1 for body recv
-            status->status = 1;
-            status->buffer_size = header->body_length;
-            status->sent_data = 0;
-            status->key_length = header->key_length;
-            status->value_length = header->value_length;
+            memset(status->req_info, 0, num_request * sizeof(RequestInfo));
             return 0;
         }
 
-        int process_body(struct network::StatusM *status, char *body, size_t body_length, char **response)
+        int process_header(struct network::StatusM *status, struct ::iovec **r_iovec)
         {
-            if (status == nullptr || body == nullptr) // body_length > MAX_BODY_SIZE
+            if (status == nullptr || status->status != network::READ_HEADER || status->req_info == nullptr || status->num_request == 0)
                 return -1;
 
-            char *tokens[MAX_TOKEN_SIZE] = {0};
+            *r_iovec = (struct ::iovec *)allocator::kv_malloc(status->num_request * sizeof(struct ::iovec));
+            if (*r_iovec == nullptr)
+                return -2;
 
-            uint32_t command_length = status->buffer_size - status->key_length - status->value_length;
+            for (int i = 0; i < status->num_request; i++)
+            {
+                if (status->req_info[i].command == KVS_START || status->req_info[i].command >= KVS_END)
+                {
+                    status->req_info[i].command = KVS_INVALID;
+                }
+                else
+                {
+                    (*r_iovec)[i].iov_len = status->req_info[i].body_length;
+                    (*r_iovec)[i].iov_base = allocator::kv_malloc(status->req_info[i].body_length);
+                    if ((*r_iovec)[i].iov_base == nullptr)
+                        return -2;
+                }
+            }
+            status->status = network::READ_BODY;
+            return 0;
+        }
 
-            int count = _split_token(body, tokens, command_length, status->key_length, status->value_length);
-            if (count == -1)
+        int process_body(struct network::StatusM *status, struct ::iovec *r_iovec, struct ::iovec **w_iovec)
+        {
+            if (status == nullptr || r_iovec == nullptr || w_iovec == nullptr)
                 return -1;
 
-            int wbuf_size = _process_tokens(tokens, response, command_length, status->key_length, status->value_length);
-            if (wbuf_size == -1)
-                return -1;
+            size_t iovec_size = (status->num_request + 2);
+            status->w_iovec_size = iovec_size;
+            size_t w_iovec_size = iovec_size * sizeof(struct ::iovec);
 
-            status->status = 2;
-            status->buffer_size = wbuf_size;
-            return wbuf_size;
+            *w_iovec = static_cast<struct ::iovec *>(allocator::kv_malloc(w_iovec_size));
+            if (*w_iovec == nullptr)
+                return -2;
+            memset(*w_iovec, 0, w_iovec_size);
+
+            (*w_iovec)[0].iov_len = NUM_HEADER_SIZE;
+            (*w_iovec)[0].iov_base = allocator::kv_malloc(NUM_HEADER_SIZE);
+            if ((*w_iovec)[0].iov_base == nullptr)
+                return -2;
+
+            ((NumHeader *)(*w_iovec)[0].iov_base)->num_request = status->num_request;
+
+            (*w_iovec)[1].iov_len = sizeof(KvResponseHeader) * status->num_request;
+            (*w_iovec)[1].iov_base = allocator::kv_malloc(sizeof(KvResponseHeader) * status->num_request);
+            if ((*w_iovec)[1].iov_base == nullptr)
+                return -2;
+
+            memset((*w_iovec)[1].iov_base, 0, sizeof(KvResponseHeader) * status->num_request);
+
+            for (int i = 0; i < status->num_request; i++)
+            {
+                char *response_body = nullptr;
+                int wbuf_size = _process_body(status->req_info[i].command, status->req_info[i].body_length, status->req_info[i].key_length, static_cast<char *>(r_iovec[i].iov_base), &response_body);
+                if (wbuf_size <= 0)
+                    continue;
+
+                (*w_iovec)[i + 2].iov_base = response_body;
+                (*w_iovec)[i + 2].iov_len = wbuf_size;
+                ((KvResponseHeader *)(*w_iovec)[1].iov_base)[i].response_length = wbuf_size;
+            }
+
+            status->status = network::SEND_RESPONSE;
+            return 0;
         }
 
     private:
         KvProtocal() {}
         ~KvProtocal() {}
 
-        int _split_token(char *body, char **tokens, uint32_t command_length, uint32_t key_length, uint32_t value_length)
+        int _split_token(char *body, char **tokens, uint32_t key_length)
         {
-            if (body == nullptr || tokens == nullptr)
-                return -1;
-
-            if (command_length == 0)
+            if (body == nullptr || tokens == nullptr || key_length == 0)
                 return -1;
 
             tokens[0] = body;
-            if (key_length == 0)
-                return -1;
-            tokens[1] = body + command_length;
-
-            if (value_length > 0)
-            {
-                tokens[2] = tokens[1] + key_length;
-                return 3;
-            }
-            return 2;
+            tokens[1] = body + key_length;
+            return 0;
         }
 
-        int _process_tokens(char **tokens, char **response, uint32_t command_length, uint32_t key_length, uint32_t value_length)
+        int _process_body(uint16_t command, size_t body_length, size_t key_length, char *body, char **response)
+        {
+            if (body == nullptr || body_length == 0 || key_length == 0) // body_length > MAX_BODY_SIZE
+                return -1;
+
+            char *tokens[MAX_TOKEN_SIZE] = {0};
+
+            uint32_t value_length = body_length - key_length;
+
+            int count = _split_token(body, tokens, key_length);
+            if (count == -1)
+                return -1;
+
+            int wbuf_size = _process_tokens(tokens, response, command, key_length, value_length);
+            if (wbuf_size == -1)
+                return -1;
+
+            return wbuf_size;
+        }
+
+        int _process_tokens(char **tokens, char **response, uint16_t command, uint32_t key_length, uint32_t value_length)
         {
             if (tokens == nullptr || response == nullptr)
                 return -1;
 
-            int cmd = KVS_START;
-
-            for (; cmd < KVS_END; cmd++)
-            {
-                if (strncmp(tokens[0], command[cmd], command_length) == 0)
-                    break;
-            }
-
             int wbuf_size = 0;
             char wbuf[BUFFER_SIZE] = {0};
             int ret = 0;
-            char *key = tokens[1];
-            char *value = tokens[2];
-            kv_protocal::KvHeader header;
+            char *key = tokens[0];
+            char *value = tokens[1];
 
-            memset(&header, 0, kv_protocal::HEADER_SIZE);
-
-            switch (cmd)
+            switch (command)
             {
             case KVS_SET:
             {
@@ -206,20 +225,18 @@ namespace kv_protocal
                 break;
             }
 
-            header.body_length = static_cast<uint32_t>(wbuf_size);
-            *response = (char *)allocator::kv_malloc(kv_protocal::HEADER_SIZE + wbuf_size);
+            // *response = (char *)allocator::kv_malloc(wbuf_size);
 
-            memcpy(*response, &header, sizeof(header));
-
-            if (cmd == KVS_GET && ret > 0)
-            {
-                memcpy(*response + sizeof(header), value, wbuf_size);
-                allocator::kv_free(value);
-            }
+            if (command == KVS_GET && ret > 0)
+                *response = value;
             else
-                memcpy(*response + sizeof(header), wbuf, wbuf_size);
-
-            return wbuf_size;
+            {
+                *response = (char *)allocator::kv_malloc(wbuf_size);
+                if (*response == nullptr)
+                    return -2;
+                memcpy(*response, wbuf, wbuf_size);
+            }
+            return static_cast<uint32_t>(wbuf_size);
         }
 
         KvProtocal(const KvProtocal &) = delete;
