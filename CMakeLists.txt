@@ -65,6 +65,7 @@ add_library(kvstore_core STATIC
     memory/thread_cache.cpp
     network/network_utils.cpp
     core_engine/rbtree_engine/rbtree_engine.cpp
+    persistent_core/kv_persistent.cpp
 )
 
 target_include_directories(kvstore_core
@@ -73,6 +74,7 @@ target_include_directories(kvstore_core
         ${PROJECT_SOURCE_DIR}/memory
         ${PROJECT_SOURCE_DIR}/network
         ${PROJECT_SOURCE_DIR}/protocal
+        ${PROJECT_SOURCE_DIR}/persistent_core
         ${PROJECT_SOURCE_DIR}/base_component/rbtree
 )
 

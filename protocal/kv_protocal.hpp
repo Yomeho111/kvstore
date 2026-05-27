@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 #include "status.h"
 #include "engine_interface.h"
@@ -29,6 +30,12 @@ namespace kv_protocal
         static KvProtocal &instance()
         {
             static KvProtocal prot;
+            static int ret = prot._engine.init();
+            if (ret < 0)
+            {
+                fprintf(stderr, "kv_protocal init failure: %d\n", ret);
+                exit(-1);
+            }
             return prot;
         }
 

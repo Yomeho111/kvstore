@@ -6,7 +6,7 @@
 
 namespace kv_protocal
 {
-    inline constexpr const char *command[] = {
+    inline constexpr const char *command_str[] = {
         "START",
         "SET",
         "GET",

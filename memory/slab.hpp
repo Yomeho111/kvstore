@@ -29,8 +29,8 @@ namespace memory
     public:
         static SlabN &instance()
         {
-            static SlabN slab_;
-            return slab_;
+            static SlabN *slab_ = new SlabN();
+            return *slab_;
         }
 
         void *malloc()

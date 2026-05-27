@@ -6,6 +6,7 @@
 #include "engine_interface.h"
 #include "rbtree.hpp"
 #include "allocator.h"
+#include "kv_persistent.h"
 
 using string = std::basic_string<
     char,
@@ -20,18 +21,24 @@ namespace kv_engine
     class RbtreeEngine : public EngineInterface
     {
     public:
-        int set(char *key, size_t key_len, char *value, size_t val_len) override;
+        RbtreeEngine() = default;
+        ~RbtreeEngine() = default;
+
+        int set(char *key, size_t key_len, char *value, size_t val_len, bool to_disk = true) override;
 
         int get(char *key, size_t key_len, char **value) override;
 
-        int modify(char *key, size_t key_len, char *value, size_t val_len) override;
+        int modify(char *key, size_t key_len, char *value, size_t val_len, bool to_disk = true) override;
 
-        int del(char *key, size_t key_len) override;
+        int del(char *key, size_t key_len, bool to_disk = true) override;
 
         int exist(char *key, size_t key_len) override;
 
+        int init() noexcept override;
+
     private:
         base_component::RBTree<string, string> rbt;
+        kv_persistent::StoreEngine store_engine;
     };
 }
 

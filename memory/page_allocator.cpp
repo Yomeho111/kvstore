@@ -12,8 +12,8 @@ namespace memory
 
     PageAllocator &PageAllocator::instance()
     {
-        static PageAllocator pa;
-        return pa;
+        static PageAllocator *pa = new PageAllocator();
+        return *pa;
     }
 
     PageAllocator::~PageAllocator()

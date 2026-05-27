@@ -2,6 +2,7 @@
 #define __ENGINE_INTERFACE_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 namespace kv_engine
 {
@@ -11,15 +12,17 @@ namespace kv_engine
         EngineInterface() {}
         virtual ~EngineInterface() {}
 
-        virtual int set(char *key, size_t key_len, char *value, size_t val_len) = 0;
+        virtual int set(char *key, size_t key_len, char *value, size_t val_len, bool to_disk = true) = 0;
 
         virtual int get(char *key, size_t key_len, char **value) = 0;
 
-        virtual int modify(char *key, size_t key_len, char *value, size_t val_len) = 0;
+        virtual int modify(char *key, size_t key_len, char *value, size_t val_len, bool to_disk = true) = 0;
 
-        virtual int del(char *key, size_t key_len) = 0;
+        virtual int del(char *key, size_t key_len, bool to_disk = true) = 0;
 
         virtual int exist(char *key, size_t key_len) = 0;
+
+        virtual int init() noexcept = 0;
     };
 }
 #endif // __ENGINE_INTERFACE_H

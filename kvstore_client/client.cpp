@@ -11,8 +11,8 @@ namespace kv_client
     {
         for (uint32_t i = kv_protocal::KVS_START + 1; i < kv_protocal::KVS_END; i++)
         {
-            size_t len = strlen(kv_protocal::command[i]);
-            if (cmd.size() == len && memcmp(cmd.data(), kv_protocal::command[i], len) == 0)
+            size_t len = strlen(kv_protocal::command_str[i]);
+            if (cmd.size() == len && memcmp(cmd.data(), kv_protocal::command_str[i], len) == 0)
                 return i;
         }
         return kv_protocal::KVS_INVALID;

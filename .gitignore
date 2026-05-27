@@ -16,6 +16,9 @@ out/
 *.exe
 *.out
 
+# data store binary
+*.dt
+
 # common binary names
 main
 app

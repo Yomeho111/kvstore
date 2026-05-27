@@ -6,13 +6,17 @@
 #include "my_coroutine/coroutine_server.h"
 #endif
 
+#include "kv_protocal.hpp"
+
 #include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 
 void handler(int sig)
 {
-    printf("Close the server with %d\n", sig);
+    const char msg[] = "Close the server\n";
+    write(STDOUT_FILENO, msg, sizeof(msg) - 1);
     exit(sig);
 }
 
@@ -23,6 +27,7 @@ int main()
     signal(SIGTERM, handler);
     signal(SIGINT, handler);
 
+    auto &prot = kv_protocal::KvStoreProtocal::instance();
 #ifdef REACTOR
     reactor::TcpServers servers(8050);
     servers.init();
