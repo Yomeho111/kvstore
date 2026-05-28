@@ -17,6 +17,7 @@ namespace kv_engine
         if (key_s.size() == 0 || val_s.size() == 0)
             return -1;
 
+        std::lock_guard lk{lock_};
         auto *node = rbt.get_node(key_s);
         if (node)
             return 1;
@@ -38,6 +39,7 @@ namespace kv_engine
         if (key_s.size() == 0)
             return -1;
 
+        std::lock_guard lk{lock_};
         auto *node = rbt.get_node(key_s);
         if (node == nullptr)
             return 0;
@@ -61,6 +63,7 @@ namespace kv_engine
         if (key_s.size() == 0 || val_s.size() == 0)
             return -1;
 
+        std::lock_guard lk{lock_};
         auto *node = rbt.get_node(key_s);
         if (!node)
             return 1;
@@ -81,6 +84,7 @@ namespace kv_engine
         if (key_s.size() == 0)
             return -1;
 
+        std::lock_guard lk{lock_};
         if (rbt.delNode(key_s) == -1)
             return 1;
 
@@ -98,6 +102,7 @@ namespace kv_engine
         if (key_s.size() == 0)
             return -1;
 
+        std::lock_guard lk{lock_};
         auto *node = rbt.get_node(key_s);
         if (node == nullptr)
             return 1;

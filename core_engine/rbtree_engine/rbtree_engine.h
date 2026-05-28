@@ -7,6 +7,7 @@
 #include "rbtree.hpp"
 #include "allocator.h"
 #include "kv_persistent.h"
+#include "memory_utils.h"
 
 using string = std::basic_string<
     char,
@@ -37,6 +38,7 @@ namespace kv_engine
         int init() noexcept override;
 
     private:
+        memory::SpinLock lock_;
         base_component::RBTree<string, string> rbt;
         kv_persistent::StoreEngine store_engine;
     };
