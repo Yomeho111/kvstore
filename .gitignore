@@ -18,6 +18,7 @@ out/
 
 # data store binary
 *.dt
+data/
 
 # common binary names
 main
