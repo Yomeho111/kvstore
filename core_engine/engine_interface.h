@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "kv_header.h"
 
 namespace kv_engine
 {
@@ -12,11 +13,11 @@ namespace kv_engine
         EngineInterface() {}
         virtual ~EngineInterface() {}
 
-        virtual int set(char *key, size_t key_len, char *value, size_t val_len, bool to_disk = true) = 0;
+        virtual int set(char *key, size_t key_len, char *value, size_t val_len, struct kv_protocal::TimeoutSpec *timeout = nullptr, bool to_disk = true) = 0;
 
         virtual int get(char *key, size_t key_len, char **value) = 0;
 
-        virtual int modify(char *key, size_t key_len, char *value, size_t val_len, bool to_disk = true) = 0;
+        virtual int modify(char *key, size_t key_len, char *value, size_t val_len, struct kv_protocal::TimeoutSpec *timeout = nullptr, bool to_disk = true) = 0;
 
         virtual int del(char *key, size_t key_len, bool to_disk = true) = 0;
 

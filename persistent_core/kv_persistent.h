@@ -3,7 +3,14 @@
 
 #include <fstream>
 #include <filesystem>
+#include <string>
 #include "engine_interface.h"
+#include "allocator.h"
+
+using string = std::basic_string<
+    char,
+    std::char_traits<char>,
+    allocator::MyAllocator<char>>;
 
 namespace kv_persistent
 {
@@ -19,7 +26,7 @@ namespace kv_persistent
             _close_file();
         }
 
-        int dump_record(CommandType command, char *key, size_t key_len, char *value, size_t val_len);
+        int dump_record(CommandType command, const string &key, const string &value);
 
         int load_record(kv_engine::EngineInterface *engine);
 

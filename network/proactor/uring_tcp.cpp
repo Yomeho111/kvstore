@@ -5,6 +5,7 @@
 #include "allocator.h"
 #include "kv_protocal.hpp"
 #include "network_utils.h"
+#include "timer.h"
 
 namespace proactor
 {
@@ -536,12 +537,37 @@ namespace proactor
         {
             io_uring_submit(&_ring);
 
-            struct io_uring_cqe *cqe;
-            if (io_uring_wait_cqe(&_ring, &cqe) < 0)
+            auto &timer_m = kv_timer::TimerManager::instance();
+            int wait_time = timer_m.get_next_timeout_ms();
+            int ret = 0;
+
+            if (wait_time >= 0)
+            {
+                __kernel_timespec ts;
+                ts.tv_sec = wait_time / 1000;
+                ts.tv_nsec = (wait_time % 1000) * 1000000;
+
+                struct io_uring_cqe *cqe;
+                ret = io_uring_wait_cqe_timeout(&_ring, &cqe, &ts);
+            }
+            else
+            {
+                struct io_uring_cqe *cqe;
+                ret = io_uring_wait_cqe(&_ring, &cqe);
+            }
+
+            if (ret == -ETIME)
+            {
+                timer_m.handle_expired();
+                continue;
+            }
+            else if (ret < 0)
             {
                 perror("error io_uring_wait_cqe");
                 return -1;
             }
+
+            timer_m.handle_expired();
 
             struct io_uring_cqe *cqes[1024];
             int nready = io_uring_peek_batch_cqe(&_ring, cqes, 1024);

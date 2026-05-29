@@ -5,6 +5,7 @@
 #include "allocator.h"
 #include "kv_protocal.hpp"
 #include "network_utils.h"
+#include "timer.h"
 
 namespace reactor
 {
@@ -228,13 +229,17 @@ namespace reactor
         while (1)
         {
             struct epoll_event events[1024];
-            int nready = epoll_wait(_epfd, events, 1024, -1);
+            auto &timer_m = kv_timer::TimerManager::instance();
+            int wait_time = timer_m.get_next_timeout_ms();
+            int nready = epoll_wait(_epfd, events, 1024, wait_time);
 
             if (nready < 0)
             {
                 perror("error epoll_wait");
                 return -1;
             }
+
+            timer_m.handle_expired();
 
             for (int i = 0; i < nready; i++)
             {

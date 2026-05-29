@@ -309,7 +309,7 @@ namespace base_component
 
         iterator begin()
         {
-            return iterator{root};
+            return iterator{get_minimum(root)};
         }
 
         iterator end()

@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define TRANS_TIMEOUT_MILLI(timeout) std::chrono::duration_cast<std::chrono::milliseconds>( \
+    std::chrono::seconds(timeout->tv_sec) +                                                 \
+    std::chrono::nanoseconds(timeout->tv_nsec))
+
 namespace kv_protocal
 {
     inline constexpr const char *command_str[] = {
@@ -35,11 +39,18 @@ namespace kv_protocal
 
     constexpr inline const size_t NUM_HEADER_SIZE = sizeof(NumHeader);
 
+    struct TimeoutSpec
+    {
+        long tv_sec{-1};
+        long tv_nsec{-1};
+    };
+
     struct RequestInfo
     {
         uint32_t command;
         uint32_t body_length;
         uint32_t key_length;
+        struct TimeoutSpec timeout;
     };
 
     constexpr inline const size_t HEADER_SIZE = sizeof(struct RequestInfo);

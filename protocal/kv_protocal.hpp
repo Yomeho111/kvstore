@@ -112,7 +112,7 @@ namespace kv_protocal
             for (int i = 0; i < status->num_request; i++)
             {
                 char *response_body = nullptr;
-                int wbuf_size = _process_body(status->req_info[i].command, status->req_info[i].body_length, status->req_info[i].key_length, static_cast<char *>(r_iovec[i].iov_base), &response_body);
+                int wbuf_size = _process_body(status->req_info[i].command, status->req_info[i].body_length, status->req_info[i].key_length, static_cast<char *>(r_iovec[i].iov_base), &response_body, &status->req_info[i].timeout);
                 if (wbuf_size <= 0)
                     continue;
 
@@ -139,7 +139,7 @@ namespace kv_protocal
             return 0;
         }
 
-        int _process_body(uint16_t command, size_t body_length, size_t key_length, char *body, char **response)
+        int _process_body(uint16_t command, size_t body_length, size_t key_length, char *body, char **response, struct TimeoutSpec *timeout)
         {
             if (body == nullptr || body_length == 0 || key_length == 0) // body_length > MAX_BODY_SIZE
                 return -1;
@@ -152,14 +152,14 @@ namespace kv_protocal
             if (count == -1)
                 return -1;
 
-            int wbuf_size = _process_tokens(tokens, response, command, key_length, value_length);
+            int wbuf_size = _process_tokens(tokens, response, command, key_length, value_length, timeout);
             if (wbuf_size == -1)
                 return -1;
 
             return wbuf_size;
         }
 
-        int _process_tokens(char **tokens, char **response, uint16_t command, uint32_t key_length, uint32_t value_length)
+        int _process_tokens(char **tokens, char **response, uint16_t command, uint32_t key_length, uint32_t value_length, struct TimeoutSpec *timeout)
         {
             if (tokens == nullptr || response == nullptr)
                 return -1;
@@ -174,7 +174,7 @@ namespace kv_protocal
             {
             case KVS_SET:
             {
-                ret = _engine.set(key, key_length, value, value_length);
+                ret = _engine.set(key, key_length, value, value_length, timeout);
                 if (ret == 0)
                     wbuf_size = snprintf(wbuf, BUFFER_SIZE, "OK\r\n");
                 else if (ret < 0)
@@ -196,7 +196,7 @@ namespace kv_protocal
             }
             case KVS_MOD:
             {
-                ret = _engine.modify(key, key_length, value, value_length);
+                ret = _engine.modify(key, key_length, value, value_length, timeout);
                 if (ret == 0)
                     wbuf_size = snprintf(wbuf, BUFFER_SIZE, "OK\r\n");
                 else if (ret < 0)

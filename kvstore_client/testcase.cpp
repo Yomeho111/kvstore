@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/time.h>
+#include <unistd.h>
 #include <string>
 
 #include "allocator.h"
@@ -116,6 +117,61 @@ void testcase2(kv_client::KvClient &client)
     batch_testcase(client, requests, patterns, sizeof(requests) / sizeof(requests[0]), "batch-large-value");
 }
 
+void testcase_timeout(kv_client::KvClient &client)
+{
+    kv_protocal::TimeoutSpec set_timeout{0, 200 * 1000 * 1000};
+    kv_protocal::TimeoutSpec mod_timeout{0, 300 * 1000 * 1000};
+
+    kv_client::KvRequest cleanup_requests[] = {
+        {"DEL", "TimeoutSet", ""},
+        {"DEL", "TimeoutMod", ""},
+    };
+
+    kv_client::KvBatchResponse cleanup_response{};
+    if (client.submit_batch(cleanup_requests, sizeof(cleanup_requests) / sizeof(cleanup_requests[0]), &cleanup_response) == 0)
+        kv_client::KvClient::free_batch_response(&cleanup_response);
+
+    kv_client::KvRequest set_mod_requests[] = {
+        {"SET", "TimeoutSet", "Alpha", set_timeout},
+        {"GET", "TimeoutSet", ""},
+        {"SET", "TimeoutMod", "Before"},
+        {"MOD", "TimeoutMod", "After", mod_timeout},
+        {"GET", "TimeoutMod", ""},
+        {"EXIST", "TimeoutSet", ""},
+        {"EXIST", "TimeoutMod", ""},
+    };
+
+    const char *set_mod_patterns[] = {
+        "OK\r\n",
+        "Alpha\r\n",
+        "OK\r\n",
+        "OK\r\n",
+        "After\r\n",
+        "EXIST\r\n",
+        "EXIST\r\n",
+    };
+
+    batch_testcase(client, set_mod_requests, set_mod_patterns, sizeof(set_mod_requests) / sizeof(set_mod_requests[0]), "batch-timeout-before-expire");
+
+    usleep(600 * 1000);
+
+    kv_client::KvRequest expired_requests[] = {
+        {"GET", "TimeoutSet", ""},
+        {"EXIST", "TimeoutSet", ""},
+        {"GET", "TimeoutMod", ""},
+        {"EXIST", "TimeoutMod", ""},
+    };
+
+    const char *expired_patterns[] = {
+        "NOT EXIST\r\n",
+        "NOT EXIST\r\n",
+        "NOT EXIST\r\n",
+        "NOT EXIST\r\n",
+    };
+
+    batch_testcase(client, expired_requests, expired_patterns, sizeof(expired_requests) / sizeof(expired_requests[0]), "batch-timeout-after-expire");
+}
+
 void array_testcase_1w(kv_client::KvClient &client, void (*func)(kv_client::KvClient &))
 {
 
@@ -163,6 +219,8 @@ int main(int argc, char **argv)
         testcase2(client_ins);
     else if (mode == 3)
         array_testcase_1w(client_ins, testcase2);
+    else if (mode == 4)
+        testcase_timeout(client_ins);
     else
     {
         perror("Invalid testcase number");

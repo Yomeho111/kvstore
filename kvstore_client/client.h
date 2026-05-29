@@ -35,10 +35,11 @@ namespace kv_client
         string command;
         string key;
         string value;
+        kv_protocal::TimeoutSpec timeout;
 
-        KvRequest() {}
-        KvRequest(const string &cmd, const string &k, const string &v) : command(cmd), key(k), value(v) {}
-        KvRequest(const char *cmd, const char *k, const char *v) : command(cmd), key(k), value(v) {}
+        KvRequest() : timeout{} {}
+        KvRequest(const string &cmd, const string &k, const string &v, const kv_protocal::TimeoutSpec &t = {}) : command(cmd), key(k), value(v), timeout(t) {}
+        KvRequest(const char *cmd, const char *k, const char *v, const kv_protocal::TimeoutSpec &t = {}) : command(cmd), key(k), value(v), timeout(t) {}
     };
 
     struct KvResponse
@@ -66,6 +67,7 @@ namespace kv_client
         int init();
 
         char *submit_request(const string &command, const string &key, const string &value);
+        char *submit_request(const string &command, const string &key, const string &value, const kv_protocal::TimeoutSpec &timeout);
         char *submit_request(const string &line);
         char *submit_request(const std::string &line);
         int submit_batch(const KvRequest *requests, uint32_t num_request, KvBatchResponse *response);

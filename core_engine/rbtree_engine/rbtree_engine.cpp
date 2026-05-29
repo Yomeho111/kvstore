@@ -1,13 +1,14 @@
 #include "rbtree_engine.h"
 #include <string.h>
 #include <stdio.h>
+#include <chrono>
 
 #include "slab.hpp"
-#include "kv_header.h"
+#include "timer.h"
 
 namespace kv_engine
 {
-    int RbtreeEngine::set(char *key, size_t key_len, char *value, size_t val_len, bool to_disk)
+    int RbtreeEngine::set(char *key, size_t key_len, char *value, size_t val_len, struct kv_protocal::TimeoutSpec *timeout, bool to_disk)
     {
         if (key_len == 0 || val_len == 0)
             return -1;
@@ -24,9 +25,22 @@ namespace kv_engine
 
         rbt.insert(key_s, val_s);
 
-        if (to_disk && store_engine.dump_record(kv_protocal::KVS_SET, key, key_len, value, val_len) < 0)
+        if (to_disk && store_engine.dump_record(kv_protocal::KVS_SET, key_s, val_s) < 0)
             return -2;
 
+        if (timeout && timeout->tv_sec != -1 && timeout->tv_nsec != -1)
+        {
+            auto dur = TRANS_TIMEOUT_MILLI(timeout);
+
+            kv_timer::TimerManager::instance().add_event(
+                dur,
+                [this, k_s = std::move(key_s)]
+                {
+                    std::lock_guard lk{this->lock_};
+                    this->rbt.delNode(k_s);
+                    this->store_engine.dump_record(kv_protocal::KVS_DEL, k_s, string{});
+                });
+        }
         return 0;
     }
 
@@ -53,7 +67,7 @@ namespace kv_engine
         return node->value.size() + 2;
     }
 
-    int RbtreeEngine::modify(char *key, size_t key_len, char *value, size_t val_len, bool to_disk)
+    int RbtreeEngine::modify(char *key, size_t key_len, char *value, size_t val_len, struct kv_protocal::TimeoutSpec *timeout, bool to_disk)
     {
         if (key_len == 0 || val_len == 0)
             return -1;
@@ -70,8 +84,22 @@ namespace kv_engine
 
         node->value = val_s;
 
-        if (to_disk && store_engine.dump_record(kv_protocal::KVS_MOD, key, key_len, value, val_len) < 0)
+        if (to_disk && store_engine.dump_record(kv_protocal::KVS_MOD, key_s, val_s) < 0)
             return -2;
+
+        if (timeout && timeout->tv_sec != -1 && timeout->tv_nsec != -1)
+        {
+            auto dur = TRANS_TIMEOUT_MILLI(timeout);
+
+            kv_timer::TimerManager::instance().add_event(
+                dur,
+                [this, k_s = std::move(key_s)]
+                {
+                    std::lock_guard lk{this->lock_};
+                    this->rbt.delNode(k_s);
+                    this->store_engine.dump_record(kv_protocal::KVS_DEL, k_s, string{});
+                });
+        }
         return 0;
     }
 
@@ -88,7 +116,7 @@ namespace kv_engine
         if (rbt.delNode(key_s) == -1)
             return 1;
 
-        if (to_disk && store_engine.dump_record(kv_protocal::KVS_DEL, key, key_len, nullptr, 0) < 0)
+        if (to_disk && store_engine.dump_record(kv_protocal::KVS_DEL, key_s, string{}) < 0)
             return -2;
         return 0;
     }

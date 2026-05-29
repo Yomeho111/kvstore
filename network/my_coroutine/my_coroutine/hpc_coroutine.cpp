@@ -6,6 +6,7 @@
 #include "utils.h"
 
 #include "allocator.h"
+#include "timer.h"
 
 namespace hpc_coroutine
 {
@@ -97,12 +98,16 @@ namespace hpc_coroutine
 
     int CoroutineSched::process_epoll()
     {
-        int nready = epoll_wait(epfd_, events_, EPOLL_EVENTS_SIZE, -1);
+        auto &timer_m = kv_timer::TimerManager::instance();
+        int wait_time = timer_m.get_next_timeout_ms();
+        int nready = epoll_wait(epfd_, events_, EPOLL_EVENTS_SIZE, wait_time);
         if (nready < 0)
         {
             perror("Error epoll_wait");
             return -1;
         }
+
+        timer_m.handle_expired();
 
         // process ready fd
         for (int i = 0; i < nready; i++)

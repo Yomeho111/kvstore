@@ -25,11 +25,11 @@ namespace kv_engine
         RbtreeEngine() = default;
         ~RbtreeEngine() = default;
 
-        int set(char *key, size_t key_len, char *value, size_t val_len, bool to_disk = true) override;
+        int set(char *key, size_t key_len, char *value, size_t val_len, struct kv_protocal::TimeoutSpec *timeout = nullptr, bool to_disk = true) override;
 
         int get(char *key, size_t key_len, char **value) override;
 
-        int modify(char *key, size_t key_len, char *value, size_t val_len, bool to_disk = true) override;
+        int modify(char *key, size_t key_len, char *value, size_t val_len, struct kv_protocal::TimeoutSpec *timeout = nullptr, bool to_disk = true) override;
 
         int del(char *key, size_t key_len, bool to_disk = true) override;
 

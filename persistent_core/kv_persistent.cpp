@@ -11,7 +11,6 @@
 #include <iostream>
 #include <vector>
 
-#include "allocator.h"
 #include "kv_header.h"
 
 namespace kv_persistent
@@ -48,9 +47,11 @@ namespace kv_persistent
         return true;
     }
 
-    int StoreEngine::dump_record(CommandType command, char *key, size_t key_len, char *value, size_t val_len)
+    int StoreEngine::dump_record(CommandType command, const string &key, const string &value)
     {
-        if (key == nullptr || !(command == kv_protocal::KVS_SET || command == kv_protocal::KVS_DEL || command == kv_protocal::KVS_MOD) || key_len == 0)
+        size_t key_len = key.size();
+        size_t val_len = value.size();
+        if (!(command == kv_protocal::KVS_SET || command == kv_protocal::KVS_DEL || command == kv_protocal::KVS_MOD) || key_len == 0)
             return -1;
 
         if (!file_.is_open())
@@ -80,7 +81,7 @@ namespace kv_persistent
         cur += sizeof(key_len);
 
         // write key
-        memcpy(cur, key, key_len);
+        memcpy(cur, key.data(), key_len);
         cur += key_len;
 
         // write value_len
@@ -90,7 +91,7 @@ namespace kv_persistent
         // write value
         if (val_len > 0)
         {
-            memcpy(cur, value, val_len);
+            memcpy(cur, value.data(), val_len);
         }
 
         file_.seekp(0, std::ios::end);
@@ -259,7 +260,7 @@ namespace kv_persistent
 
             if (command == kv_protocal::KVS_SET)
             {
-                ret = engine->set(key, key_len, value, val_len, false);
+                ret = engine->set(key, key_len, value, val_len, nullptr, false);
             }
             else if (command == kv_protocal::KVS_DEL)
             {
@@ -267,7 +268,7 @@ namespace kv_persistent
             }
             else if (command == kv_protocal::KVS_MOD)
             {
-                ret = engine->modify(key, key_len, value, val_len, false);
+                ret = engine->modify(key, key_len, value, val_len, nullptr, false);
             }
             else
             {
