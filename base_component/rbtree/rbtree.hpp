@@ -104,6 +104,8 @@ namespace base_component
         void insert(const K &k, const V &v)
         {
             void *ptr = memory::Slab<NodeType>::instance().malloc();
+            if (ptr == nullptr)
+                return;
             NodeType *node = new (ptr) NodeType(k, v);
             insert(node);
         }

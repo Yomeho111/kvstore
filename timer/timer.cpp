@@ -39,6 +39,7 @@ namespace kv_timer
         {
             timers_.erase(it->second);
             id_to_iter_.erase(it);
+            return true;
         }
         return false;
     }

@@ -235,6 +235,8 @@ namespace reactor
 
             if (nready < 0)
             {
+                if (errno == EINTR)
+                    continue;
                 perror("error epoll_wait");
                 return -1;
             }
@@ -287,6 +289,7 @@ namespace reactor
         if (pool->setup_client_conn(clientfd, sock_conn->servers) == -1)
         {
             perror("error register_clientfd");
+            close(clientfd);
             return -1;
         }
 
