@@ -9,6 +9,17 @@ namespace memory
         return tc;
     }
 
+    ThreadCache::~ThreadCache()
+    {
+        for (size_t index = 0; index < FREE_LIST_SIZE; index++)
+        {
+            if (free_lst_[index] && count_lst_[index])
+                CentralPool::instance().return_batch(free_lst_[index], index, count_lst_[index]);
+            free_lst_[index] = nullptr;
+            count_lst_[index] = 0;
+        }
+    }
+
     void *ThreadCache::alloc(size_t size)
     {
         size_t total_size = size + ALIGNMENT;

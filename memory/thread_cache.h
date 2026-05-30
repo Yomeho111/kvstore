@@ -16,7 +16,7 @@ namespace memory
 
     private:
         ThreadCache() = default;
-        ~ThreadCache() = default;
+        ~ThreadCache();
 
         ThreadCache(const ThreadCache &) = delete;
         ThreadCache(ThreadCache &&) = delete;
