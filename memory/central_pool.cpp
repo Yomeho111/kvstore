@@ -7,8 +7,8 @@ namespace memory
 {
     CentralPool &CentralPool::instance()
     {
-        static CentralPool cp;
-        return cp;
+        static CentralPool *cp = new CentralPool();
+        return *cp;
     }
 
     char *CentralPool::fetch_batch(size_t index, size_t &batch_num)
