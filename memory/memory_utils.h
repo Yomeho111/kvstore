@@ -30,7 +30,13 @@ namespace memory
         void lock()
         {
             while (flag_.test_and_set(std::memory_order_acquire))
-                ;
+            {
+#ifdef __x86_64__
+                __asm__ __volatile__("pause");
+#elif defined(__aarch64__) || defined(__arm__)
+                __asm__ __volatile__("yield");
+#endif
+            }
         }
 
         void unlock()
