@@ -1,5 +1,12 @@
 #include "reactor.h"
 
+#include <unistd.h>
+#include <errno.h>
+#include "allocator.h"
+#include "kv_protocal.hpp"
+#include "network_utils.h"
+#include "timer.h"
+
 namespace reactor
 {
 
@@ -18,24 +25,50 @@ namespace reactor
         }
         return &_pool[fd];
     }
+
     ConnPool::~ConnPool()
     {
         for (int i = 0; i < MAX_CONN_SIZE; i++)
         {
-            if (_pool[i].rbuf != nullptr)
-            {
-                free(_pool[i].rbuf);
-                _pool[i].rbuf = nullptr;
-            }
-            if (_pool[i].wbuf != nullptr)
-            {
-                free(_pool[i].wbuf);
-                _pool[i].wbuf = nullptr;
-            }
+            clean_up_r_w(i);
+
             if (_pool[i].is_used)
             {
                 close(_pool[i].fd);
             }
+        }
+    }
+
+    void ConnPool::clean_up_r_w(int fd)
+    {
+        if (_pool[fd].status.req_info)
+        {
+            allocator::kv_free(_pool[fd].status.req_info);
+            _pool[fd].status.req_info = nullptr;
+        }
+
+        if (_pool[fd].r_iovec)
+        {
+            for (int j = 0; j < _pool[fd].status.num_request; j++)
+            {
+                allocator::kv_free(_pool[fd].r_iovec[j].iov_base);
+                _pool[fd].r_iovec[j].iov_base = nullptr;
+            }
+
+            allocator::kv_free(_pool[fd].r_iovec);
+            _pool[fd].r_iovec = nullptr;
+        }
+
+        if (_pool[fd].w_iovec)
+        {
+            for (int j = 0; j < _pool[fd].status.w_iovec_size; j++)
+            {
+                allocator::kv_free(_pool[fd].w_iovec[j].iov_base);
+                _pool[fd].w_iovec[j].iov_base = nullptr;
+            }
+
+            allocator::kv_free(_pool[fd].w_iovec);
+            _pool[fd].w_iovec = nullptr;
         }
     }
 
@@ -47,22 +80,12 @@ namespace reactor
         close(fd);
         _pool[fd].fd = -1;
         _pool[fd].status.status = 0;
-        _pool[fd].rbuf_size = 0;
-        _pool[fd].wbuf_size = 0;
-        _pool[fd].servers = nullptr;
-        if (_pool[fd].rbuf != nullptr)
-        {
-            free(_pool[fd].rbuf);
-            _pool[fd].rbuf = nullptr;
-        }
-        if (_pool[fd].wbuf != nullptr)
-        {
-            free(_pool[fd].wbuf);
-            _pool[fd].wbuf = nullptr;
-        }
+        clean_up_r_w(fd);
 
         _pool[fd].recv_cb = nullptr;
         _pool[fd].send_cb = nullptr;
+        _pool[fd].status.num_request = 0;
+        _pool[fd].servers = nullptr;
     }
 
     int ConnPool::setup_accept_conn(int fd, TcpServers *servers)
@@ -72,9 +95,9 @@ namespace reactor
             perror("Invalid fd for register_listenfd");
             return -1;
         }
+        clean_up_r_w(fd);
         _pool[fd].fd = fd;
         _pool[fd].recv_cb = accept_callback;
-        _pool[fd].status.status = 0;
         _pool[fd].is_used = true;
         _pool[fd].servers = servers;
 
@@ -88,25 +111,12 @@ namespace reactor
             perror("Invalid clientfd for register_clientfd");
             return -1;
         }
+        clean_up_r_w(fd);
         _pool[fd].fd = fd;
-        _pool[fd].status.status = 0;
-        _pool[fd].rbuf_size = 0;
-        _pool[fd].wbuf_size = 0;
         _pool[fd].is_used = true;
         _pool[fd].recv_cb = recv_callback;
         _pool[fd].send_cb = send_callback;
         _pool[fd].servers = servers;
-
-        if (_pool[fd].rbuf != nullptr)
-        {
-            free(_pool[fd].rbuf);
-            _pool[fd].rbuf = nullptr;
-        }
-        if (_pool[fd].wbuf != nullptr)
-        {
-            free(_pool[fd].wbuf);
-            _pool[fd].wbuf = nullptr;
-        }
 
         return 0;
     }
@@ -219,13 +229,19 @@ namespace reactor
         while (1)
         {
             struct epoll_event events[1024];
-            int nready = epoll_wait(_epfd, events, 1024, -1);
+            auto &timer_m = kv_timer::TimerManager::instance();
+            int wait_time = timer_m.get_next_timeout_ms();
+            int nready = epoll_wait(_epfd, events, 1024, wait_time);
 
             if (nready < 0)
             {
+                if (errno == EINTR)
+                    continue;
                 perror("error epoll_wait");
                 return -1;
             }
+
+            timer_m.handle_expired();
 
             for (int i = 0; i < nready; i++)
             {
@@ -269,14 +285,11 @@ namespace reactor
 
         Conn *sock_conn = pool->operator[](fd);
 
-        // char *client_ip = inet_ntoa(caddr.sin_addr);
-
-        // printf("%s connect to the server\n", client_ip);
-
         // register the clientfd into conn_list
         if (pool->setup_client_conn(clientfd, sock_conn->servers) == -1)
         {
             perror("error register_clientfd");
+            close(clientfd);
             return -1;
         }
 
@@ -299,6 +312,7 @@ namespace reactor
 
     int recv_callback(int fd)
     {
+        int ret = 0;
         if (fd < 0 || fd >= MAX_CONN_SIZE)
         {
             perror("Invalid sockfd");
@@ -309,43 +323,127 @@ namespace reactor
 
         Conn *conn = (*pool)[fd];
 
-        memset(conn->rbuf, 0, BUFFER_SIZE);
-        int count = recv(fd, conn->rbuf, BUFFER_SIZE, 0);
-        if (count == 0)
+        switch (conn->status.status)
         {
-            // printf("Connection %d disconnected\n", fd);
-            if (conn->servers->del_fd(fd) == -1)
+        case network::READ_NUM_REQUEST:
+        {
+            struct kv_protocal::NumHeader num_header;
+            memset(&num_header, 0, kv_protocal::NUM_HEADER_SIZE);
+
+            int count = recv(fd, &num_header, kv_protocal::NUM_HEADER_SIZE, 0);
+            if (count == 0)
+                goto clean;
+            else if (count < 0)
             {
-                perror("error del_fd");
+                if (count == -ECONNRESET)
+                    goto clean;
+                ret = -1;
+                perror("Error recv");
+                goto clean;
             }
-            pool->clean_up_conn(fd);
-            return -1;
-        }
-        else if (count < 0)
-        {
-            if (count == -ECONNRESET)
-                return 0;
-            perror("Error recv");
-            if (conn->servers->del_fd(fd) == -1)
+            else if (count != kv_protocal::NUM_HEADER_SIZE)
             {
-                perror("error del_fd");
+                perror("corrupted number of request");
+                goto clean;
             }
-            pool->clean_up_conn(fd);
-            return -1;
+
+            if (kv_protocal::KvStoreProtocal::instance().process_num_request(&conn->status, num_header.num_request) != 0)
+            {
+                perror("Processing number of error failure");
+                ret = -1;
+                goto clean;
+            }
+
+            if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
+            {
+                perror("error set_event");
+                ret = -1;
+                goto clean;
+            }
+            break;
         }
 
-        conn->rbuf_size = count;
-
-        // printf("recv: %d, %s\n", count, conn->rbuf);
-
-        if (conn->servers->set_event(fd, EPOLLOUT, EPOLL_CTL_MOD))
+        case network::READ_HEADER:
         {
-            perror("error set_event");
-            pool->clean_up_conn(fd);
-            return -1;
+            int count = recv(fd, conn->status.req_info, conn->status.num_request * kv_protocal::HEADER_SIZE, 0);
+            if (count == 0)
+                goto clean;
+            else if (count < 0)
+            {
+                if (count == -ECONNRESET)
+                    goto clean;
+                ret = -1;
+                perror("Error recv");
+                goto clean;
+            }
+            else if (count != conn->status.num_request * kv_protocal::HEADER_SIZE)
+            {
+                perror("corrupted header");
+                goto clean;
+            }
+
+            if (kv_protocal::KvStoreProtocal::instance().process_header(&conn->status, &conn->r_iovec) != 0)
+            {
+                perror("Processing header failure");
+                ret = -1;
+                goto clean;
+            }
+
+            if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
+            {
+                perror("error set_event");
+                ret = -1;
+                goto clean;
+            }
+            break;
         }
 
-        return 0;
+        case network::READ_BODY:
+        {
+
+            int count = readv_full(fd, conn->r_iovec, conn->status.num_request);
+            if (count == 0)
+                goto clean;
+            else if (count < 0)
+            {
+                if (count == -ECONNRESET)
+                    goto clean;
+                ret = -1;
+                perror("Error recv");
+                goto clean;
+            }
+
+            count = kv_protocal::KvStoreProtocal::instance().process_body(&conn->status, conn->r_iovec, &conn->w_iovec);
+            if (count < 0)
+            {
+                perror("Error handling body");
+                ret = -1;
+                goto clean;
+            }
+
+            if (conn->servers->set_event(fd, EPOLLOUT, EPOLL_CTL_MOD))
+            {
+                perror("error set_event");
+                ret = -1;
+                goto clean;
+            }
+            break;
+        }
+        default:
+            perror("Error recv status");
+            ret = -1;
+            goto clean;
+        }
+
+        return ret;
+
+    clean:
+        if (conn->servers->del_fd(fd) == -1)
+        {
+            perror("error del_fd");
+        }
+        pool->clean_up_conn(fd);
+        return ret;
     }
 
     int send_callback(int fd)
@@ -359,35 +457,42 @@ namespace reactor
         auto *pool = ConnPool::get_connpool();
 
         Conn *conn = (*pool)[fd];
+        int ret = 0;
 
-        // write into the wbuf
-        memcpy(conn->wbuf, conn->rbuf, conn->rbuf_size);
-        conn->wbuf_size = conn->rbuf_size;
-
-        int count = send(fd, conn->wbuf, conn->wbuf_size, 0);
-        if (count < 0)
+        if (conn->status.status == network::SEND_RESPONSE)
         {
-            perror("error send");
-            if (conn->servers->del_fd(fd) == -1)
+            int count = writev_all(fd, conn->w_iovec, conn->status.w_iovec_size);
+            if (count < 0)
             {
-                perror("error del_fd");
+                perror("error send");
+                ret = -1;
+                goto clean;
             }
-            pool->clean_up_conn(fd);
-            return -1;
+
+            if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
+            {
+                perror("error set_event");
+                ret = -1;
+                goto clean;
+            }
         }
-        if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
+        else
         {
-            perror("error set_event");
-            if (conn->servers->del_fd(fd) == -1)
-            {
-                perror("error del_fd");
-            }
-            pool->clean_up_conn(fd);
-            return -1;
+            perror("Error send status");
+            ret = -1;
+            goto clean;
         }
 
-        // printf("send: %ld, %s\n", conn->wbuf_size, conn->wbuf);
+        conn->status.status = 0;
+        pool->clean_up_r_w(fd);
 
-        return 0;
+        return ret;
+    clean:
+        if (conn->servers->del_fd(fd) == -1)
+        {
+            perror("error del_fd");
+        }
+        pool->clean_up_conn(fd);
+        return ret;
     }
 }

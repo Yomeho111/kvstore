@@ -10,9 +10,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
-#include "status.h"
 
-#include "kv_protocal.h"
+#include "kv_protocal.hpp"
 
 #ifndef PORT_NUM
 #define PORT_NUM 20

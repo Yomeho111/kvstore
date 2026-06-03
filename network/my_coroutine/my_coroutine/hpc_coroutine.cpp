@@ -5,6 +5,9 @@
 #include <string.h>
 #include "utils.h"
 
+#include "allocator.h"
+#include "timer.h"
+
 namespace hpc_coroutine
 {
     void _exec(void *lt)
@@ -24,13 +27,13 @@ namespace hpc_coroutine
         }
         if (stack_ != nullptr)
         {
-            free(stack_);
+            allocator::kv_free(stack_);
             stack_ = nullptr;
         }
 
         if (events_ != nullptr)
         {
-            free(events_);
+            allocator::kv_free(events_);
             events_ = nullptr;
         }
     }
@@ -45,14 +48,14 @@ namespace hpc_coroutine
             return -1;
         }
 
-        int ret = posix_memalign(&stack_, getpagesize(), stack_size_);
-        if (ret != 0)
+        stack_ = allocator::kv_malloc(stack_size_); // posix_memalign(&stack_, getpagesize(), stack_size_);
+        if (stack_ == nullptr)
         {
             perror("Error allocating stack for scheduler");
             return -1;
         }
 
-        events_ = (struct epoll_event *)malloc(sizeof(struct epoll_event) * EPOLL_EVENTS_SIZE);
+        events_ = (struct epoll_event *)allocator::kv_malloc(sizeof(struct epoll_event) * EPOLL_EVENTS_SIZE);
         if (events_ == nullptr) [[unlikely]]
         {
             perror("Error allocating events_");
@@ -95,12 +98,16 @@ namespace hpc_coroutine
 
     int CoroutineSched::process_epoll()
     {
-        int nready = epoll_wait(epfd_, events_, EPOLL_EVENTS_SIZE, -1);
+        auto &timer_m = kv_timer::TimerManager::instance();
+        int wait_time = timer_m.get_next_timeout_ms();
+        int nready = epoll_wait(epfd_, events_, EPOLL_EVENTS_SIZE, wait_time);
         if (nready < 0)
         {
             perror("Error epoll_wait");
             return -1;
         }
+
+        timer_m.handle_expired();
 
         // process ready fd
         for (int i = 0; i < nready; i++)

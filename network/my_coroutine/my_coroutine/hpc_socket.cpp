@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <errno.h>
+#include <cstring>
 #include "hpc_coroutine.h"
 
 socket_t socket_f = nullptr;
@@ -68,6 +69,11 @@ ssize_t recv(int fd, void *buf, size_t len, int flags)
     ret = recv_f(fd, buf, len, flags);
     if (ret <= 0)
     {
+        if (ret == 0)
+        {
+            errno = 0;
+            return 0;
+        }
         if (errno == EAGAIN)
             return ret;
         if (errno == ECONNRESET)
@@ -213,4 +219,152 @@ int connect(int fd, const struct sockaddr *addr, socklen_t addrlen)
     }
 
     return ret;
+}
+
+ssize_t readv_full(int fd, const struct ::iovec *iov, int iovcnt)
+{
+    if (fd < 0 || iov == nullptr || iovcnt <= 0)
+        return -1;
+
+    // Make a mutable copy because we need to adjust iov_base/iov_len
+    struct ::iovec local_iov[IOV_MAX];
+
+    if (iovcnt > IOV_MAX)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    std::memcpy(local_iov, iov, sizeof(struct ::iovec) * iovcnt);
+
+    ssize_t total_read = 0;
+    int cur = 0;
+
+    while (cur < iovcnt)
+    {
+        struct pollfd fds;
+        fds.fd = fd;
+        fds.events = POLLIN | POLLERR | POLLHUP;
+
+        int ret = hpc_coroutine::CoroutineSched::get_coroutine_sched()->poll_inner(&fds, 1);
+        if (ret == -1)
+        {
+            perror("Error recv");
+            return -1;
+        }
+
+        ssize_t n = readv(fd, &local_iov[cur], iovcnt - cur);
+
+        if (n > 0)
+        {
+            total_read += n;
+
+            while (cur < iovcnt && n >= static_cast<ssize_t>(local_iov[cur].iov_len))
+            {
+                n -= local_iov[cur].iov_len;
+                cur++;
+            }
+
+            if (cur < iovcnt && n > 0)
+            {
+                local_iov[cur].iov_base =
+                    static_cast<char *>(local_iov[cur].iov_base) + n;
+                local_iov[cur].iov_len -= n;
+            }
+
+            continue;
+        }
+        else if (n == 0)
+        {
+            // Peer closed connection before all expected bytes were read
+            return total_read;
+        }
+        else if (errno == EINTR)
+        {
+            continue;
+        }
+        else if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            // Non-blocking socket has no more data right now
+            continue;
+        }
+        else
+            return -1;
+    }
+
+    return total_read;
+}
+
+ssize_t writev_all(int fd, const struct ::iovec *iov, int iovcnt)
+{
+    if (fd < 0 || iov == nullptr || iovcnt <= 0)
+        return -1;
+
+    struct ::iovec local_iov[IOV_MAX];
+
+    if (iovcnt > IOV_MAX)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    std::memcpy(local_iov, iov, sizeof(struct ::iovec) * iovcnt);
+
+    ssize_t total_written = 0;
+    int cur = 0;
+
+    while (cur < iovcnt)
+    {
+        struct pollfd fds;
+        fds.fd = fd;
+        fds.events = POLLOUT | POLLERR | POLLHUP;
+
+        int ret = hpc_coroutine::CoroutineSched::get_coroutine_sched()->poll_inner(&fds, 1);
+        if (ret == -1)
+        {
+            perror("Error send");
+            return -1;
+        }
+
+        ssize_t n = writev(fd, &local_iov[cur], iovcnt - cur);
+
+        if (n > 0)
+        {
+            total_written += n;
+
+            while (cur < iovcnt && n >= static_cast<ssize_t>(local_iov[cur].iov_len))
+            {
+                n -= local_iov[cur].iov_len;
+                cur++;
+            }
+
+            if (cur < iovcnt && n > 0)
+            {
+                local_iov[cur].iov_base =
+                    static_cast<char *>(local_iov[cur].iov_base) + n;
+                local_iov[cur].iov_len -= n;
+            }
+
+            continue;
+        }
+        else if (n == 0)
+        {
+            // writev returning 0 usually means no progress
+            errno = EPIPE;
+            return -1;
+        }
+        else if (errno == EINTR)
+        {
+            continue;
+        }
+        else if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            // Non-blocking socket cannot write more right now
+            continue;
+        }
+        else
+            return -1;
+    }
+
+    return total_written;
 }

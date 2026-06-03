@@ -22,13 +22,12 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <liburing.h>
+#include <sys/uio.h>
 
 #include <signal.h>
 
 #include "status.h"
-#include "kv_protocal.h"
 
-#define BUFFER_SIZE 1024
 #define ACCEPT_EVENT 1
 #define READ_EVENT 2
 #define WRITE_EVENT 4
@@ -51,10 +50,12 @@ namespace proactor
         int fd;
         network::StatusM status;
 
-        size_t rbuf_size;
-        size_t wbuf_size;
-        char *rbuf;
-        char *wbuf;
+        struct ::iovec *r_iovec;
+        struct ::iovec *w_iovec;
+        struct ::iovec *io_iovec;
+        uint32_t io_iovec_size;
+        size_t io_bytes_done;
+        size_t io_bytes_total;
     };
 
     class ConnPool
@@ -68,6 +69,8 @@ namespace proactor
         int setup_accept_conn(int fd);
 
         int setup_client_conn(int fd);
+
+        void clean_up_r_w(int fd);
 
     private:
         ConnPool() {}

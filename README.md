@@ -1,0 +1,2 @@
+cmake -S . -B build -DNETWORK=REACTOR -DKVSTORE_PORT_NUM=1 -DENABLE_MEMORY_POOL=ON
+cmake --build build

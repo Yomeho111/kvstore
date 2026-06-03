@@ -1,8 +1,13 @@
 #include "coroutine_server.h"
+#include "allocator.h"
+#include "status.h"
+
+#include <errno.h>
+#include <sys/uio.h>
 
 namespace hpc_coroutine
 {
-    void server(void *arg);
+    void server(int fd);
 
     int TcpServers::init()
     {
@@ -23,7 +28,7 @@ namespace hpc_coroutine
         for (int i = 0; i < PORT_NUM; i++)
         {
             if (_fd_list[i] != -1)
-                hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server, &_fd_list[i]);
+                hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server, _fd_list[i]);
         }
 
         hpc_coroutine::CoroutineSched::get_coroutine_sched()->run();
@@ -60,27 +65,124 @@ namespace hpc_coroutine
         return fd;
     }
 
-    void server_process(void *arg)
+    void server_process(int fd)
     {
-        int fd = *(int *)arg;
-        free(arg);
-        int ret = 0;
-        struct network::StatusM status_m;
-
         while (1)
         {
-            char buf[1024] = {0};
-            ret = recv(fd, buf, 1024, 0);
-            if (ret > 0)
+            struct network::StatusM status;
+            struct kv_protocal::NumHeader num_header;
+            struct iovec *r_iovec = nullptr;
+            struct iovec *w_iovec = nullptr;
+            bool should_close = false;
+            size_t header_size = 0;
+            int process_count = 0;
+
+            memset(&status, 0, sizeof(status));
+            memset(&num_header, 0, kv_protocal::NUM_HEADER_SIZE);
+            status.status = network::READ_NUM_REQUEST;
+
+            int ret = recv(fd, &num_header, sizeof(struct kv_protocal::NumHeader), 0);
+            if (ret <= 0)
             {
-                ret = send(fd, buf, strlen(buf), 0);
-                if (ret == -1)
-                {
-                    close(fd);
-                    break;
-                }
+                if (ret < 0)
+                    perror("error recv");
+                close(fd);
+                return;
             }
-            else if (ret == 0)
+
+            if (kv_protocal::KvStoreProtocal::instance().process_num_request(&status, num_header.num_request) != 0)
+            {
+                perror("Processing number of request failure");
+                should_close = true;
+                goto clean;
+            }
+
+            header_size = status.num_request * kv_protocal::HEADER_SIZE;
+            status.req_info = (kv_protocal::RequestInfo *)allocator::kv_malloc(header_size);
+            if (status.req_info == nullptr)
+            {
+                perror("Error Memory allocation");
+                goto clean;
+            }
+
+            ret = recv(fd, status.req_info, header_size, 0);
+            if (ret <= 0)
+            {
+                if (ret < 0)
+                    perror("error recv");
+                should_close = true;
+                goto clean;
+            }
+
+            if (kv_protocal::KvStoreProtocal::instance().process_header(&status, &r_iovec) != 0)
+            {
+                perror("Processing header failure");
+                should_close = true;
+                goto clean;
+            }
+
+            ret = readv_full(fd, r_iovec, status.num_request);
+            if (ret <= 0)
+            {
+                if (ret < 0)
+                    perror("error read");
+                should_close = true;
+                goto clean;
+            }
+
+            process_count = kv_protocal::KvStoreProtocal::instance().process_body(&status, r_iovec, &w_iovec);
+            if (process_count < 0)
+            {
+                perror("Error handling body");
+                should_close = true;
+                goto clean;
+            }
+
+            ret = writev_all(fd, w_iovec, status.w_iovec_size);
+            if (ret <= 0)
+            {
+                if (ret < 0)
+                    perror("Error write");
+                should_close = true;
+                goto clean;
+            }
+
+        clean:
+            if (status.req_info != nullptr)
+            {
+                allocator::kv_free(status.req_info);
+                status.req_info = nullptr;
+            }
+
+            if (r_iovec != nullptr)
+            {
+                for (uint32_t i = 0; i < status.num_request; i++)
+                {
+                    if (r_iovec[i].iov_base != nullptr)
+                    {
+                        allocator::kv_free(r_iovec[i].iov_base);
+                        r_iovec[i].iov_base = nullptr;
+                    }
+                }
+                allocator::kv_free(r_iovec);
+                r_iovec = nullptr;
+            }
+
+            if (w_iovec != nullptr)
+            {
+                for (uint32_t i = 0; i < status.w_iovec_size; i++)
+                {
+                    if (w_iovec[i].iov_base != nullptr)
+                    {
+                        allocator::kv_free(w_iovec[i].iov_base);
+                        w_iovec[i].iov_base = nullptr;
+                    }
+                }
+                allocator::kv_free(w_iovec);
+                w_iovec = nullptr;
+            }
+
+            if (should_close)
             {
                 close(fd);
                 break;
@@ -88,10 +190,8 @@ namespace hpc_coroutine
         }
     }
 
-    void server(void *arg)
+    void server(int fd)
     {
-        int fd = *(int *)arg;
-
         struct sockaddr_in remote;
 
         struct timeval tv_begin;
@@ -115,10 +215,7 @@ namespace hpc_coroutine
             }
 #endif
             // printf("new client comming\n");
-
-            int *arg = (int *)malloc(sizeof(int));
-            *arg = cli_fd;
-            hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server_process, arg);
+            hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server_process, cli_fd);
         }
     }
 }
