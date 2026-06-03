@@ -13,9 +13,19 @@ namespace kv_timer
     {
         std::lock_guard lk{lock_};
         int id = next_id++;
-        auto it = timers_.emplace(tigger_timestep, Timer{id, std::move(callback)});
+        Timer_t timer = std::make_unique<Timer>(id, std::move(callback));
 
-        id_to_iter_[id] = it;
+        if (timers_.empty() || tigger_timestep < timers_.crbegin()->first)
+        {
+            auto it = timers_.emplace(tigger_timestep, std::move(timer));
+            id_to_iter_[id] = it;
+        }
+        else
+        {
+            auto it = timers_.emplace_hint(timers_.crbegin().base(), tigger_timestep, std::move(timer));
+            id_to_iter_[id] = it;
+        }
+
         return id;
     }
 
@@ -23,12 +33,7 @@ namespace kv_timer
     {
         TimePoint tigger_timestep = Clock::now() + dur;
 
-        std::lock_guard lk{lock_};
-        int id = next_id++;
-        auto it = timers_.emplace(tigger_timestep, Timer{id, std::move(callback)});
-
-        id_to_iter_[id] = it;
-        return id;
+        return add_event(tigger_timestep, std::move(callback));
     }
 
     bool TimerManager::cancel_event(int timer_id)
@@ -56,8 +61,8 @@ namespace kv_timer
             if (it->first > now)
                 break;
 
-            int id = it->second.TimerId;
-            Callback cb = std::move(it->second.callback);
+            int id = it->second->timer_id;
+            Callback cb = std::move(it->second->callback);
 
             timers_.erase(it);
             id_to_iter_.erase(id);
