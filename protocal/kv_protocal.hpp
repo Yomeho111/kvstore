@@ -10,7 +10,7 @@
 #include <stdlib.h>
 
 #include "status.h"
-#include "engine_interface.h"
+#include "engine_interface.hpp"
 #include "status.h"
 #include "rbtree_engine/rbtree_engine.h"
 #include "allocator.h"

@@ -1,17 +1,17 @@
-#ifndef __ENGINE_INTERFACE_H
-#define __ENGINE_INTERFACE_H
+#ifndef __ENGINE_INTERFACE_BASE_H
+#define __ENGINE_INTERFACE_BASE_H
 
 #include <stddef.h>
 #include <stdint.h>
+
 #include "kv_header.h"
 
 namespace kv_engine
 {
-    class EngineInterface
+    class EngineInterfaceBase
     {
     public:
-        EngineInterface() {}
-        virtual ~EngineInterface() {}
+        virtual ~EngineInterfaceBase() = default;
 
         virtual int set(char *key, size_t key_len, char *value, size_t val_len, struct kv_protocal::TimeoutSpec *timeout = nullptr, bool to_disk = true) = 0;
 
@@ -26,4 +26,5 @@ namespace kv_engine
         virtual int init() noexcept = 0;
     };
 }
-#endif // __ENGINE_INTERFACE_H
+
+#endif // __ENGINE_INTERFACE_BASE_H
