@@ -99,6 +99,7 @@ namespace base_component
             node->right = nil;
             node->color = 'r';
             _insertFixed(node);
+            count++;
         }
 
         void insert(const K &k, const V &v)
@@ -159,6 +160,7 @@ namespace base_component
             node = nullptr;
             if (real_delete_color == 'b')
                 _deleteFixed(placement);
+            count--;
         }
 
         int delNode(const K &k)
@@ -291,6 +293,7 @@ namespace base_component
         struct iterator
         {
             NodeType *node;
+            RBTree *tree;
 
             NodeType *operator*() const
             {
@@ -299,7 +302,7 @@ namespace base_component
 
             iterator &operator++()
             {
-                node = get_successor(node);
+                node = tree->get_successor(node);
                 return *this;
             }
 
@@ -311,12 +314,17 @@ namespace base_component
 
         iterator begin()
         {
-            return iterator{get_minimum(root)};
+            return iterator{get_minimum(root), this};
         }
 
         iterator end()
         {
-            return iterator{nullptr};
+            return iterator{nullptr, this};
+        }
+
+        int size() const
+        {
+            return count;
         }
 
     private:
@@ -564,6 +572,7 @@ namespace base_component
         NodeType *root;
         NodeType nil_value;
         NodeType *nil;
+        int count{0};
     };
 
 }

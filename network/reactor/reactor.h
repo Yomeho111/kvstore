@@ -35,18 +35,25 @@ namespace reactor
 
     typedef int (*ReactorCallback)(int);
 
-    class TcpServers;
+    class TcpBase
+    {
+    public:
+        virtual int set_event(int fd, uint32_t events, int ops) = 0;
+
+        virtual int del_fd(int fd) = 0;
+    };
 
     struct Conn
     {
         bool is_used;
+        bool heartbeat_pending;
         int fd;
         network::StatusM status;
         struct ::iovec *r_iovec;
         struct ::iovec *w_iovec;
         ReactorCallback recv_cb;
         ReactorCallback send_cb;
-        TcpServers *servers;
+        TcpBase *servers;
     };
 
     int accept_callback(int fd);
@@ -63,9 +70,9 @@ namespace reactor
 
         void clean_up_conn(int fd);
 
-        int setup_accept_conn(int fd, TcpServers *servers);
+        int setup_accept_conn(int fd, TcpBase *servers);
 
-        int setup_client_conn(int fd, TcpServers *servers);
+        int setup_client_conn(int fd, TcpBase *servers);
 
         void clean_up_r_w(int fd);
 
@@ -80,7 +87,7 @@ namespace reactor
         Conn _pool[MAX_CONN_SIZE] = {0};
     };
 
-    class TcpServers
+    class TcpServers : public TcpBase
     {
     public:
         TcpServers(uint16_t port) : _port(port) {}
@@ -89,9 +96,9 @@ namespace reactor
 
         int start_eventloop();
 
-        int set_event(int fd, uint32_t events, int ops);
+        int set_event(int fd, uint32_t events, int ops) override;
 
-        int del_fd(int fd);
+        int del_fd(int fd) override;
 
         ~TcpServers();
 
@@ -107,6 +114,37 @@ namespace reactor
         uint16_t _port;
         int _epfd;
         int _fd_list[PORT_NUM];
+    };
+
+    class TcpSlaveServer : public TcpBase
+    {
+    public:
+        TcpSlaveServer(uint16_t port, const char *ip) : _port(port), _ip(ip), _heartbeat(false) {}
+
+        int init();
+
+        int start_eventloop();
+
+        int set_event(int fd, uint32_t events, int ops) override;
+
+        int del_fd(int fd) override;
+
+        ~TcpSlaveServer();
+
+    private:
+        int init_client();
+
+        TcpSlaveServer(const TcpSlaveServer &) = delete;
+        TcpSlaveServer(TcpSlaveServer &&) = delete;
+
+        TcpSlaveServer &operator=(const TcpSlaveServer &) = delete;
+        TcpSlaveServer &operator=(TcpSlaveServer &&) = delete;
+
+        bool _heartbeat;
+        uint16_t _port;
+        int _epfd;
+        int _fd;
+        const char *_ip;
     };
 
     class Timer

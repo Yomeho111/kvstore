@@ -69,9 +69,14 @@ namespace hpc_coroutine
 
         int process_epoll();
 
+        // Yield the current coroutine back to the scheduler for `ms` milliseconds.
+        // While sleeping, the scheduler runs on its own (main) stack, so the
+        // current coroutine's stack is not active during the wait.
+        void co_sleep(int ms);
+
         bool empty() noexcept
         {
-            return ready_queue_.empty() && wait_table_.empty();
+            return ready_queue_.empty() && wait_table_.empty() && sleep_table_.empty();
         }
 
         // do schedule if there is no events
@@ -99,7 +104,8 @@ namespace hpc_coroutine
         size_t stack_size_;
         struct epoll_event *events_;
         ucontext_t main_ctx_;
-        std::unordered_map<uint32_t, Coroutine_t> wait_table_; // id: Coroutine
+        std::unordered_map<uint32_t, Coroutine_t> wait_table_;  // id: Coroutine
+        std::unordered_map<uint32_t, Coroutine_t> sleep_table_; // id: Coroutine (timed sleep)
         std::queue<Coroutine_t> ready_queue_;
     };
 

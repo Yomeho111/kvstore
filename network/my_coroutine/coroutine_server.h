@@ -45,6 +45,29 @@ namespace hpc_coroutine
         uint16_t _port;
         int _fd_list[PORT_NUM];
     };
+
+    class TcpSlaveServer
+    {
+    public:
+        TcpSlaveServer(uint16_t port, const char *ip) : _port(port), _ip(ip), _fd(-1) {}
+
+        ~TcpSlaveServer()
+        {
+            if (_fd >= 0)
+                close(_fd);
+        }
+
+        int init();
+
+        int start_eventloop();
+
+    private:
+        int init_client();
+
+        uint16_t _port;
+        const char *_ip;
+        int _fd;
+    };
 }
 
 #endif // __COR_SERVER

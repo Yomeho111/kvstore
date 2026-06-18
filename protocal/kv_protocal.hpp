@@ -15,6 +15,7 @@
 #include "rbtree_engine/rbtree_engine.h"
 #include "allocator.h"
 #include "kv_header.h"
+#include "rep_manager.h"
 
 // #define MAX_BODY_SIZE 4096
 #define MAX_TOKEN_SIZE 2
@@ -46,11 +47,11 @@ namespace kv_protocal
 
             status->status = network::READ_HEADER;
             status->num_request = num_request;
-            status->req_info = (RequestInfo *)allocator::kv_malloc(num_request * sizeof(RequestInfo));
+            status->req_info = (HeaderInfo *)allocator::kv_malloc(num_request * sizeof(HeaderInfo));
             if (status->req_info == nullptr)
                 return -2;
 
-            memset(status->req_info, 0, num_request * sizeof(RequestInfo));
+            memset(status->req_info, 0, num_request * sizeof(HeaderInfo));
             return 0;
         }
 
@@ -62,6 +63,9 @@ namespace kv_protocal
             *r_iovec = (struct ::iovec *)allocator::kv_malloc(status->num_request * sizeof(struct ::iovec));
             if (*r_iovec == nullptr)
                 return -2;
+            memset(*r_iovec, 0, status->num_request * sizeof(struct ::iovec));
+
+            bool is_response{false};
 
             for (int i = 0; i < status->num_request; i++)
             {
@@ -71,12 +75,15 @@ namespace kv_protocal
                 }
                 else
                 {
+                    if (status->req_info[i].command == KVS_RESP)
+                        is_response = true;
                     (*r_iovec)[i].iov_len = status->req_info[i].body_length;
                     (*r_iovec)[i].iov_base = allocator::kv_malloc(status->req_info[i].body_length);
                     if ((*r_iovec)[i].iov_base == nullptr)
                         return -2;
                 }
             }
+            status->is_response = is_response;
             status->status = network::READ_BODY;
             return 0;
         }
@@ -85,6 +92,31 @@ namespace kv_protocal
         {
             if (status == nullptr || r_iovec == nullptr || w_iovec == nullptr)
                 return -1;
+
+            if (status->is_response)
+            {
+                status->is_response = false;
+                status->status = network::READ_NUM_REQUEST;
+                return 0;
+            }
+
+            if (status->req_info[0].command == KVS_REPR)
+            {
+                // We want to process the response for slave sync node
+                auto &rep = replicate::RepManager::instance();
+                if (status->req_info[0].sync_idx == -1 || (rep.get_sync_idx() - status->req_info[0].sync_idx >= MAX_REP_BUFFER_SIZE))
+                {
+                    return _process_full_sync(status, w_iovec);
+                }
+                else if (rep.get_sync_idx() - status->req_info[0].sync_idx > 0)
+                {
+                    return _process_delta_sync(status, w_iovec);
+                }
+                else
+                {
+                    return _process_dummy_sync(status, w_iovec);
+                }
+            }
 
             size_t iovec_size = (status->num_request + 2);
             status->w_iovec_size = iovec_size;
@@ -102,12 +134,12 @@ namespace kv_protocal
 
             ((NumHeader *)(*w_iovec)[0].iov_base)->num_request = status->num_request;
 
-            (*w_iovec)[1].iov_len = sizeof(KvResponseHeader) * status->num_request;
-            (*w_iovec)[1].iov_base = allocator::kv_malloc(sizeof(KvResponseHeader) * status->num_request);
+            (*w_iovec)[1].iov_len = sizeof(HeaderInfo) * status->num_request;
+            (*w_iovec)[1].iov_base = allocator::kv_malloc(sizeof(HeaderInfo) * status->num_request);
             if ((*w_iovec)[1].iov_base == nullptr)
                 return -2;
 
-            memset((*w_iovec)[1].iov_base, 0, sizeof(KvResponseHeader) * status->num_request);
+            memset((*w_iovec)[1].iov_base, 0, sizeof(HeaderInfo) * status->num_request);
 
             for (int i = 0; i < status->num_request; i++)
             {
@@ -118,9 +150,56 @@ namespace kv_protocal
 
                 (*w_iovec)[i + 2].iov_base = response_body;
                 (*w_iovec)[i + 2].iov_len = wbuf_size;
-                ((KvResponseHeader *)(*w_iovec)[1].iov_base)[i].response_length = wbuf_size;
+                ((HeaderInfo *)(*w_iovec)[1].iov_base)[i].body_length = wbuf_size;
+                ((HeaderInfo *)(*w_iovec)[1].iov_base)[i].command = KVS_RESP;
             }
 
+            sync_idx = status->req_info[0].sync_idx;
+
+            status->status = network::SEND_RESPONSE;
+            return 0;
+        }
+
+        int construct_heartbeat_packet(struct network::StatusM *status, struct ::iovec **w_iovec)
+        {
+            // We want to contruct a heartbeat_packet for slave sync
+            if (status == nullptr || w_iovec == nullptr)
+                return -1;
+
+            // Allocate iovec array: [0] = NumHeader, [1] = HeaderInfo, [2] = body
+            size_t iovec_size = 3;
+            *w_iovec = static_cast<struct ::iovec *>(allocator::kv_malloc(iovec_size * sizeof(struct ::iovec)));
+            if (*w_iovec == nullptr)
+                return -2;
+            memset(*w_iovec, 0, iovec_size * sizeof(struct ::iovec));
+
+            // [0] NumHeader
+            (*w_iovec)[0].iov_len = NUM_HEADER_SIZE;
+            (*w_iovec)[0].iov_base = allocator::kv_malloc(NUM_HEADER_SIZE);
+            if ((*w_iovec)[0].iov_base == nullptr)
+                return -2;
+            ((NumHeader *)(*w_iovec)[0].iov_base)->num_request = 1;
+
+            // [1] HeaderInfo with sync_idx
+            (*w_iovec)[1].iov_len = sizeof(HeaderInfo);
+            (*w_iovec)[1].iov_base = allocator::kv_malloc(sizeof(HeaderInfo));
+            if ((*w_iovec)[1].iov_base == nullptr)
+                return -2;
+            memset((*w_iovec)[1].iov_base, 0, sizeof(HeaderInfo));
+
+            HeaderInfo *header = static_cast<HeaderInfo *>((*w_iovec)[1].iov_base);
+            header->sync_idx = sync_idx;
+            header->body_length = sizeof(int);
+            header->command = KVS_REPR;
+
+            // [2] Dummy body (int 0)
+            (*w_iovec)[2].iov_len = sizeof(int);
+            (*w_iovec)[2].iov_base = allocator::kv_malloc(sizeof(int));
+            if ((*w_iovec)[2].iov_base == nullptr)
+                return -2;
+            *(static_cast<int *>((*w_iovec)[2].iov_base)) = sync_idx;
+
+            status->w_iovec_size = iovec_size;
             status->status = network::SEND_RESPONSE;
             return 0;
         }
@@ -246,6 +325,134 @@ namespace kv_protocal
             return static_cast<uint32_t>(wbuf_size);
         }
 
+        int _process_full_sync(struct network::StatusM *status, struct ::iovec **w_iovec)
+        {
+            // Full sync: loop through the engine and send all existing KV pairs
+            auto &rep = replicate::RepManager::instance();
+            std::lock_guard lk{_engine.lock_};
+            int num = _engine.size();
+
+            size_t iovec_size = num + 2;
+            status->w_iovec_size = iovec_size;
+            *w_iovec = static_cast<struct ::iovec *>(allocator::kv_malloc(iovec_size * sizeof(struct ::iovec)));
+            if (*w_iovec == nullptr)
+                return -2;
+            memset(*w_iovec, 0, iovec_size * sizeof(struct ::iovec));
+
+            (*w_iovec)[0].iov_len = NUM_HEADER_SIZE;
+            (*w_iovec)[0].iov_base = allocator::kv_malloc(NUM_HEADER_SIZE);
+            if ((*w_iovec)[0].iov_base == nullptr)
+                return -2;
+            ((NumHeader *)(*w_iovec)[0].iov_base)->num_request = num;
+
+            (*w_iovec)[1].iov_len = sizeof(HeaderInfo) * num;
+            (*w_iovec)[1].iov_base = allocator::kv_malloc(sizeof(HeaderInfo) * num);
+            if ((*w_iovec)[1].iov_base == nullptr)
+                return -2;
+            memset((*w_iovec)[1].iov_base, 0, sizeof(HeaderInfo) * num);
+
+            int i = 0;
+            for (auto it = _engine.begin(); it != _engine.end(); ++it, ++i)
+            {
+                auto *node = *it;
+                size_t body_len = node->key.size() + node->value.size();
+                char *body = static_cast<char *>(allocator::kv_malloc(body_len));
+                if (body == nullptr)
+                    return -2;
+                memcpy(body, node->key.c_str(), node->key.size());
+                memcpy(body + node->key.size(), node->value.c_str(), node->value.size());
+
+                (*w_iovec)[i + 2].iov_base = body;
+                (*w_iovec)[i + 2].iov_len = body_len;
+
+                HeaderInfo *hdr = &((HeaderInfo *)(*w_iovec)[1].iov_base)[i];
+                hdr->command = KVS_SET;
+                hdr->key_length = node->key.size();
+                hdr->body_length = body_len;
+                hdr->sync_idx = rep.get_sync_idx();
+                // No expiry for replicated entries (memset left {0,0} which would
+                // schedule an immediate delete on the slave).
+                hdr->timeout.tv_sec = -1;
+                hdr->timeout.tv_nsec = -1;
+            }
+            status->status = network::SEND_RESPONSE;
+            return 0;
+        }
+
+        int _process_delta_sync(struct network::StatusM *status, struct ::iovec **w_iovec)
+        {
+            // Delta sync: send only entries appended since slave's sync_idx
+            auto &rep = replicate::RepManager::instance();
+            int slave_idx = status->req_info[0].sync_idx;
+            int master_idx = rep.get_sync_idx();
+            int num = master_idx - slave_idx;
+
+            size_t iovec_size = num + 2;
+            status->w_iovec_size = iovec_size;
+            *w_iovec = static_cast<struct ::iovec *>(allocator::kv_malloc(iovec_size * sizeof(struct ::iovec)));
+            if (*w_iovec == nullptr)
+                return -2;
+            memset(*w_iovec, 0, iovec_size * sizeof(struct ::iovec));
+
+            (*w_iovec)[0].iov_len = NUM_HEADER_SIZE;
+            (*w_iovec)[0].iov_base = allocator::kv_malloc(NUM_HEADER_SIZE);
+            if ((*w_iovec)[0].iov_base == nullptr)
+                return -2;
+            ((NumHeader *)(*w_iovec)[0].iov_base)->num_request = num;
+
+            (*w_iovec)[1].iov_len = sizeof(HeaderInfo) * num;
+            (*w_iovec)[1].iov_base = allocator::kv_malloc(sizeof(HeaderInfo) * num);
+            if ((*w_iovec)[1].iov_base == nullptr)
+                return -2;
+            memset((*w_iovec)[1].iov_base, 0, sizeof(HeaderInfo) * num);
+
+            for (int i = 0; i < num; i++)
+            {
+                const replicate::Node &rnode = rep[slave_idx + i];
+                size_t body_len = rnode.key.size() + rnode.value.size();
+                char *body = static_cast<char *>(allocator::kv_malloc(body_len));
+                if (body == nullptr)
+                    return -2;
+                memcpy(body, rnode.key.c_str(), rnode.key.size());
+                memcpy(body + rnode.key.size(), rnode.value.c_str(), rnode.value.size());
+
+                (*w_iovec)[i + 2].iov_base = body;
+                (*w_iovec)[i + 2].iov_len = body_len;
+
+                HeaderInfo *hdr = &((HeaderInfo *)(*w_iovec)[1].iov_base)[i];
+                hdr->command = rnode.command;
+                hdr->key_length = rnode.key.size();
+                hdr->body_length = body_len;
+                hdr->sync_idx = rep.get_sync_idx();
+                // No expiry for replicated entries (memset left {0,0} which would
+                // schedule an immediate delete on the slave).
+                hdr->timeout.tv_sec = -1;
+                hdr->timeout.tv_nsec = -1;
+            }
+            status->status = network::SEND_RESPONSE;
+            return 0;
+        }
+
+        int _process_dummy_sync(struct network::StatusM *status, struct ::iovec **w_iovec)
+        {
+            // if there is no update, just send back a dummy response with 0 requests
+            size_t iovec_size = 1;
+            status->w_iovec_size = iovec_size;
+            *w_iovec = static_cast<struct ::iovec *>(allocator::kv_malloc(iovec_size * sizeof(struct ::iovec)));
+            if (*w_iovec == nullptr)
+                return -2;
+            memset(*w_iovec, 0, iovec_size * sizeof(struct ::iovec));
+
+            (*w_iovec)[0].iov_len = NUM_HEADER_SIZE;
+            (*w_iovec)[0].iov_base = allocator::kv_malloc(NUM_HEADER_SIZE);
+            if ((*w_iovec)[0].iov_base == nullptr)
+                return -2;
+            ((NumHeader *)(*w_iovec)[0].iov_base)->num_request = 0;
+
+            status->status = network::SEND_RESPONSE;
+            return 0;
+        }
+
         KvProtocal(const KvProtocal &) = delete;
         KvProtocal(KvProtocal &&) = delete;
 
@@ -253,6 +460,7 @@ namespace kv_protocal
         KvProtocal &operator=(KvProtocal &&) = delete;
 
         KvEngine _engine;
+        int sync_idx{-1};
     };
 
 #ifdef RBTREE_ENGINE

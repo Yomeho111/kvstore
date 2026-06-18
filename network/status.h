@@ -16,10 +16,11 @@ namespace network
 
     struct StatusM
     {
+        bool is_response;
         uint16_t status; // 0: num_request 1: header 2: body 3: response
         uint32_t num_request;
         uint32_t w_iovec_size;
-        struct kv_protocal::RequestInfo *req_info;
+        struct kv_protocal::HeaderInfo *req_info;
     };
 }
 

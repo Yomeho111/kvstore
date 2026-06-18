@@ -67,6 +67,7 @@ add_library(kvstore_core STATIC
     core_engine/rbtree_engine/rbtree_engine.cpp
     persistent_core/kv_persistent.cpp
     timer/timer.cpp
+    replication/rep_manager.cpp
 )
 
 target_include_directories(kvstore_core
@@ -78,6 +79,7 @@ target_include_directories(kvstore_core
         ${PROJECT_SOURCE_DIR}/persistent_core
         ${PROJECT_SOURCE_DIR}/base_component/rbtree
         ${PROJECT_SOURCE_DIR}/timer
+        ${PROJECT_SOURCE_DIR}/replication
 )
 
 target_compile_definitions(kvstore_core

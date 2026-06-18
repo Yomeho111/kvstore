@@ -13,6 +13,7 @@
 #include "memory_utils.h"
 #include "slab.hpp"
 #include "timer.h"
+#include "rep_manager.h"
 
 using string = std::basic_string<
     char,
@@ -50,16 +51,21 @@ namespace kv_engine
             if (to_disk && store_engine.dump_record(kv_protocal::KVS_SET, key_s, val_s) < 0)
                 return -2;
 
+            if (to_disk && replicate::g_replicate && replicate::RepManager::instance().insert_node(&key_s, &val_s, kv_protocal::KVS_SET) < 0)
+                return -3;
+
             if (timeout && timeout->tv_sec != -1 && timeout->tv_nsec != -1)
             {
                 auto dur = TRANS_TIMEOUT_MILLI(timeout);
 
                 kv_timer::TimerManager::instance().add_event(
                     dur,
-                    [this, k_s = std::move(key_s)]
+                    [this, to_disk, k_s = std::move(key_s)]
                     {
                         std::lock_guard lk{this->lock_};
                         static_cast<RealEngine *>(this)->get_base().delNode(k_s);
+                        if (to_disk && replicate::g_replicate && replicate::RepManager::instance().insert_node(&k_s, nullptr, kv_protocal::KVS_DEL) < 0)
+                            ;
                         this->store_engine.dump_record(kv_protocal::KVS_DEL, k_s, string{});
                     });
             }
@@ -111,16 +117,21 @@ namespace kv_engine
             if (to_disk && store_engine.dump_record(kv_protocal::KVS_MOD, key_s, val_s) < 0)
                 return -2;
 
+            if (to_disk && replicate::g_replicate && replicate::RepManager::instance().insert_node(&key_s, &val_s, kv_protocal::KVS_MOD) < 0)
+                return -3;
+
             if (timeout && timeout->tv_sec != -1 && timeout->tv_nsec != -1)
             {
                 auto dur = TRANS_TIMEOUT_MILLI(timeout);
 
                 kv_timer::TimerManager::instance().add_event(
                     dur,
-                    [this, k_s = std::move(key_s)]
+                    [this, to_disk, k_s = std::move(key_s)]
                     {
                         std::lock_guard lk{this->lock_};
                         static_cast<RealEngine *>(this)->get_base().delNode(k_s);
+                        if (to_disk && replicate::g_replicate && replicate::RepManager::instance().insert_node(&k_s, nullptr, kv_protocal::KVS_DEL) < 0)
+                            ;
                         this->store_engine.dump_record(kv_protocal::KVS_DEL, k_s, string{});
                     });
             }
@@ -143,6 +154,9 @@ namespace kv_engine
 
             if (to_disk && store_engine.dump_record(kv_protocal::KVS_DEL, key_s, string{}) < 0)
                 return -2;
+
+            if (to_disk && replicate::g_replicate && replicate::RepManager::instance().insert_node(&key_s, nullptr, kv_protocal::KVS_DEL) < 0)
+                return -3;
             return 0;
         }
 
@@ -178,8 +192,14 @@ namespace kv_engine
             return static_cast<RealEngine *>(this)->get_base().end();
         }
 
-    private:
+        int size()
+        {
+            return static_cast<RealEngine *>(this)->get_base().size();
+        }
+
         memory::SpinLock lock_;
+
+    private:
         kv_persistent::StoreEngine store_engine;
     };
 }
