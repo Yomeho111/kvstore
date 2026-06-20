@@ -88,7 +88,8 @@ namespace proactor
     class TcpServers
     {
     public:
-        TcpServers(uint16_t port) : _port(port) {}
+        TcpServers(uint16_t port)
+            : _port(port) {}
 
         int init();
 
@@ -122,7 +123,8 @@ namespace proactor
     class TcpSlaveServer
     {
     public:
-        TcpSlaveServer(uint16_t port, const char *ip) : _heartbeat(false), _port(port), _fd(-1), _ip(ip) {}
+        TcpSlaveServer(uint16_t port, const char *ip)
+            : _heartbeat(false), _port(port), _fd(-1), _ip(ip) {}
 
         int init();
 
@@ -190,6 +192,6 @@ namespace proactor
         timeval _begin;
         std::mutex _mtx;
     };
-}
+} // namespace proactor
 
 #endif // __URING_TCP_H

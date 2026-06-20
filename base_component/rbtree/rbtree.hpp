@@ -43,8 +43,10 @@ namespace base_component
         K key;
         V value;
         using type = K;
-        TreeNode(const K &k, const V &v) : key(k), value(v) {}
-        TreeNode(K &&k, V &&v) : key(std::move(k)), value(std::move(v)) {}
+        TreeNode(const K &k, const V &v)
+            : key(k), value(v) {}
+        TreeNode(K &&k, V &&v)
+            : key(std::move(k)), value(std::move(v)) {}
         TreeNode() {}
     };
 
@@ -582,5 +584,5 @@ namespace base_component
         int count{0};
     };
 
-}
+} // namespace base_component
 #endif // RBTREE_HPP

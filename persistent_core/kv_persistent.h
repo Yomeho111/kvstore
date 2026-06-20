@@ -49,6 +49,6 @@ namespace kv_persistent
         size_t file_size = 0;
         std::fstream file_;
     };
-}
+} // namespace kv_persistent
 
 #endif // __KV_PERSISTENT_H

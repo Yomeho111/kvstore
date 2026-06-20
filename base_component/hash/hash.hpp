@@ -19,8 +19,10 @@ namespace base_component
         V value;
         HashNode *next{nullptr};
         HashNode *prev{nullptr};
-        HashNode(const K &k, const V &v) : key(k), value(v) {}
-        HashNode(K &&k, V &&v) : key(std::move(k)), value(std::move(v)) {}
+        HashNode(const K &k, const V &v)
+            : key(k), value(v) {}
+        HashNode(K &&k, V &&v)
+            : key(std::move(k)), value(std::move(v)) {}
         HashNode() = default;
 
         HashNode(HashNode &&) noexcept = default;
@@ -304,6 +306,6 @@ namespace base_component
         NodeType **hash_{nullptr};
         HashFunc hasher_;
     };
-}
+} // namespace base_component
 
 #endif // __HASH_TABLE_H

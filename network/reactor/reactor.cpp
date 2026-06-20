@@ -328,128 +328,128 @@ namespace reactor
 
         switch (conn->status.status)
         {
-        case network::READ_NUM_REQUEST:
-        {
-            struct kv_protocal::NumHeader num_header;
-            memset(&num_header, 0, kv_protocal::NUM_HEADER_SIZE);
-
-            int count = recv(fd, &num_header, kv_protocal::NUM_HEADER_SIZE, 0);
-            if (count == 0)
-                goto clean;
-            else if (count < 0)
+            case network::READ_NUM_REQUEST:
             {
-                if (count == -ECONNRESET)
+                struct kv_protocal::NumHeader num_header;
+                memset(&num_header, 0, kv_protocal::NUM_HEADER_SIZE);
+
+                int count = recv(fd, &num_header, kv_protocal::NUM_HEADER_SIZE, 0);
+                if (count == 0)
                     goto clean;
-                ret = -1;
-                perror("Error recv");
-                goto clean;
-            }
-            else if (count != kv_protocal::NUM_HEADER_SIZE)
-            {
-                perror("corrupted number of request");
-                goto clean;
-            }
-
-            if (num_header.num_request > 0)
-            {
-                if (kv_protocal::KvStoreProtocal::instance().process_num_request(&conn->status, num_header.num_request) != 0)
+                else if (count < 0)
                 {
-                    perror("Processing number of error failure");
+                    if (count == -ECONNRESET)
+                        goto clean;
                     ret = -1;
+                    perror("Error recv");
                     goto clean;
                 }
-            }
-
-            if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
-            {
-                perror("error set_event");
-                ret = -1;
-                goto clean;
-            }
-            break;
-        }
-
-        case network::READ_HEADER:
-        {
-            int count = recv(fd, conn->status.req_info, conn->status.num_request * kv_protocal::HEADER_SIZE, 0);
-            if (count == 0)
-                goto clean;
-            else if (count < 0)
-            {
-                if (count == -ECONNRESET)
-                    goto clean;
-                ret = -1;
-                perror("Error recv");
-                goto clean;
-            }
-            else if (count != conn->status.num_request * kv_protocal::HEADER_SIZE)
-            {
-                perror("corrupted header");
-                goto clean;
-            }
-
-            if (kv_protocal::KvStoreProtocal::instance().process_header(&conn->status, &conn->r_iovec) != 0)
-            {
-                perror("Processing header failure");
-                ret = -1;
-                goto clean;
-            }
-
-            if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
-            {
-                perror("error set_event");
-                ret = -1;
-                goto clean;
-            }
-            break;
-        }
-
-        case network::READ_BODY:
-        {
-
-            int count = readv_full(fd, conn->r_iovec, conn->status.num_request);
-            if (count == 0)
-                goto clean;
-            else if (count < 0)
-            {
-                if (count == -ECONNRESET)
-                    goto clean;
-                ret = -1;
-                perror("Error recv");
-                goto clean;
-            }
-
-            count = kv_protocal::KvStoreProtocal::instance().process_body(&conn->status, conn->r_iovec, &conn->w_iovec);
-            if (count < 0)
-            {
-                perror("Error handling body");
-                ret = -1;
-                goto clean;
-            }
-            if (conn->status.status == network::SEND_RESPONSE)
-            {
-                if (conn->servers->set_event(fd, EPOLLOUT, EPOLL_CTL_MOD))
+                else if (count != kv_protocal::NUM_HEADER_SIZE)
                 {
-                    perror("error set_event");
-                    ret = -1;
+                    perror("corrupted number of request");
                     goto clean;
                 }
-            }
-            else
-            {
+
+                if (num_header.num_request > 0)
+                {
+                    if (kv_protocal::KvStoreProtocal::instance().process_num_request(&conn->status, num_header.num_request) != 0)
+                    {
+                        perror("Processing number of error failure");
+                        ret = -1;
+                        goto clean;
+                    }
+                }
+
                 if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
                 {
                     perror("error set_event");
                     ret = -1;
                     goto clean;
                 }
+                break;
             }
-            break;
-        }
-        default:
-            perror("Error recv status");
-            ret = -1;
-            goto clean;
+
+            case network::READ_HEADER:
+            {
+                int count = recv(fd, conn->status.req_info, conn->status.num_request * kv_protocal::HEADER_SIZE, 0);
+                if (count == 0)
+                    goto clean;
+                else if (count < 0)
+                {
+                    if (count == -ECONNRESET)
+                        goto clean;
+                    ret = -1;
+                    perror("Error recv");
+                    goto clean;
+                }
+                else if (count != conn->status.num_request * kv_protocal::HEADER_SIZE)
+                {
+                    perror("corrupted header");
+                    goto clean;
+                }
+
+                if (kv_protocal::KvStoreProtocal::instance().process_header(&conn->status, &conn->r_iovec) != 0)
+                {
+                    perror("Processing header failure");
+                    ret = -1;
+                    goto clean;
+                }
+
+                if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
+                {
+                    perror("error set_event");
+                    ret = -1;
+                    goto clean;
+                }
+                break;
+            }
+
+            case network::READ_BODY:
+            {
+
+                int count = readv_full(fd, conn->r_iovec, conn->status.num_request);
+                if (count == 0)
+                    goto clean;
+                else if (count < 0)
+                {
+                    if (count == -ECONNRESET)
+                        goto clean;
+                    ret = -1;
+                    perror("Error recv");
+                    goto clean;
+                }
+
+                count = kv_protocal::KvStoreProtocal::instance().process_body(&conn->status, conn->r_iovec, &conn->w_iovec);
+                if (count < 0)
+                {
+                    perror("Error handling body");
+                    ret = -1;
+                    goto clean;
+                }
+                if (conn->status.status == network::SEND_RESPONSE)
+                {
+                    if (conn->servers->set_event(fd, EPOLLOUT, EPOLL_CTL_MOD))
+                    {
+                        perror("error set_event");
+                        ret = -1;
+                        goto clean;
+                    }
+                }
+                else
+                {
+                    if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
+                    {
+                        perror("error set_event");
+                        ret = -1;
+                        goto clean;
+                    }
+                }
+                break;
+            }
+            default:
+                perror("Error recv status");
+                ret = -1;
+                goto clean;
         }
 
         return ret;
@@ -665,4 +665,4 @@ namespace reactor
         }
         return 0;
     }
-}
+} // namespace reactor

@@ -50,6 +50,6 @@ namespace replicate
         int sync_idx_{0};
         Node ring_buff_[MAX_REP_BUFFER_SIZE];
     };
-}
+} // namespace replicate
 
 #endif // __REP_MANAGER_H

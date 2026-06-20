@@ -22,6 +22,6 @@ namespace network
         uint32_t w_iovec_size;
         struct kv_protocal::HeaderInfo *req_info;
     };
-}
+} // namespace network
 
 #endif // __STATUS_H

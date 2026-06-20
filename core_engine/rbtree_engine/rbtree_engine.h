@@ -21,6 +21,6 @@ namespace kv_engine
     private:
         base_component::RBTree<string, string> rbt;
     };
-}
+} // namespace kv_engine
 
 #endif // __RBTREE_ENGINE_H

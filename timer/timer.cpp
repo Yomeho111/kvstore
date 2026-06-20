@@ -91,4 +91,4 @@ namespace kv_timer
 
         return static_cast<int>(diff.count());
     }
-}
+} // namespace kv_timer

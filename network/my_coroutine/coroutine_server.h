@@ -24,7 +24,8 @@ namespace hpc_coroutine
     class TcpServers
     {
     public:
-        TcpServers(uint16_t port) : _port(port) {}
+        TcpServers(uint16_t port)
+            : _port(port) {}
 
         ~TcpServers()
         {
@@ -49,7 +50,8 @@ namespace hpc_coroutine
     class TcpSlaveServer
     {
     public:
-        TcpSlaveServer(uint16_t port, const char *ip) : _port(port), _ip(ip), _fd(-1) {}
+        TcpSlaveServer(uint16_t port, const char *ip)
+            : _port(port), _ip(ip), _fd(-1) {}
 
         ~TcpSlaveServer()
         {
@@ -68,6 +70,6 @@ namespace hpc_coroutine
         const char *_ip;
         int _fd;
     };
-}
+} // namespace hpc_coroutine
 
 #endif // __COR_SERVER

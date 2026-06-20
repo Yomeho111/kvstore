@@ -20,6 +20,6 @@ namespace kv_engine
     private:
         base_component::Array<string, string> data;
     };
-}
+} // namespace kv_engine
 
 #endif // __ARRAY_ENGINE_H

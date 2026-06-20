@@ -177,4 +177,4 @@ namespace network
         allocator::kv_free(*iov);
         *iov = nullptr;
     }
-}
+} // namespace network

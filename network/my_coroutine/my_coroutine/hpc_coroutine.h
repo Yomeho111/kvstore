@@ -84,7 +84,8 @@ namespace hpc_coroutine
 
     private:
         // singleton
-        CoroutineSched(int stack_size) : epfd_(-1), spawned_coroutines_(0), stack_(nullptr), stack_size_(stack_size ? stack_size : MAX_STACK_SIZE), events_(nullptr)
+        CoroutineSched(int stack_size)
+            : epfd_(-1), spawned_coroutines_(0), stack_(nullptr), stack_size_(stack_size ? stack_size : MAX_STACK_SIZE), events_(nullptr)
         {
         }
         ~CoroutineSched();
@@ -112,7 +113,8 @@ namespace hpc_coroutine
     class Coroutine
     {
     public:
-        Coroutine(uint32_t id, CoroutineSched *sched, std::function<void()> func) : is_ep_(false), fd_(-1), id_(id), status_(CoroutineStatus::NEW), stack_(nullptr), sched_(sched), stack_size_(0), func_(std::move(func)) {}
+        Coroutine(uint32_t id, CoroutineSched *sched, std::function<void()> func)
+            : is_ep_(false), fd_(-1), id_(id), status_(CoroutineStatus::NEW), stack_(nullptr), sched_(sched), stack_size_(0), func_(std::move(func)) {}
         ~Coroutine();
 
         void resume();
@@ -171,6 +173,6 @@ namespace hpc_coroutine
         std::function<void()> func_;
         ucontext_t ctx_;
     };
-}
+} // namespace hpc_coroutine
 
 #endif // __HPC_COROUTINE_H

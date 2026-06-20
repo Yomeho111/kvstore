@@ -6,4 +6,4 @@ namespace kv_engine
     {
         return data;
     }
-}
+} // namespace kv_engine

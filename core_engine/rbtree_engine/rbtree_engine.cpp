@@ -6,4 +6,4 @@ namespace kv_engine
     {
         return rbt;
     }
-}
+} // namespace kv_engine

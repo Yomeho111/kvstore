@@ -24,8 +24,10 @@ namespace base_component
         K key;
         V value;
         SkipNode *forward[MAX_SKIP_LEVEL]{nullptr};
-        SkipNode(const K &k, const V &v) : key(k), value(v) {}
-        SkipNode(K &&k, V &&v) : key(std::move(k)), value(std::move(v)) {}
+        SkipNode(const K &k, const V &v)
+            : key(k), value(v) {}
+        SkipNode(K &&k, V &&v)
+            : key(std::move(k)), value(std::move(v)) {}
         SkipNode() = default;
 
         SkipNode(SkipNode &&) noexcept = default;
@@ -247,6 +249,6 @@ namespace base_component
         std::mt19937 gen{rd()};
         std::uniform_real_distribution<double> dist{0.0, 1.0};
     };
-}
+} // namespace base_component
 
 #endif // __SKIPLIST_H

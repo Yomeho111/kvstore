@@ -37,9 +37,12 @@ namespace kv_client
         string value;
         kv_protocal::TimeoutSpec timeout;
 
-        KvRequest() : timeout{} {}
-        KvRequest(const string &cmd, const string &k, const string &v, const kv_protocal::TimeoutSpec &t = {}) : command(cmd), key(k), value(v), timeout(t) {}
-        KvRequest(const char *cmd, const char *k, const char *v, const kv_protocal::TimeoutSpec &t = {}) : command(cmd), key(k), value(v), timeout(t) {}
+        KvRequest()
+            : timeout{} {}
+        KvRequest(const string &cmd, const string &k, const string &v, const kv_protocal::TimeoutSpec &t = {})
+            : command(cmd), key(k), value(v), timeout(t) {}
+        KvRequest(const char *cmd, const char *k, const char *v, const kv_protocal::TimeoutSpec &t = {})
+            : command(cmd), key(k), value(v), timeout(t) {}
     };
 
     struct KvResponse
@@ -57,7 +60,8 @@ namespace kv_client
     class KvClient
     {
     public:
-        KvClient(const std::string &ip, uint16_t port) : _ip(ip), _port(port), _fd(-1) {}
+        KvClient(const std::string &ip, uint16_t port)
+            : _ip(ip), _port(port), _fd(-1) {}
         ~KvClient()
         {
             if (_fd >= 0)
@@ -79,6 +83,6 @@ namespace kv_client
         uint16_t _port;
         int _fd;
     };
-}
+} // namespace kv_client
 
 #endif // __CLIENT_H

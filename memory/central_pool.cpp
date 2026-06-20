@@ -89,4 +89,4 @@ namespace memory
         ptr = PageAllocator::instance().alloc_page(total_page);
         return (char *)ptr;
     }
-}
+} // namespace memory

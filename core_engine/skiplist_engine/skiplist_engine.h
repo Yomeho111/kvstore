@@ -20,6 +20,6 @@ namespace kv_engine
     private:
         base_component::Skiplist<string, string> data;
     };
-}
+} // namespace kv_engine
 
 #endif // __SKIPLIST_ENGINE_H

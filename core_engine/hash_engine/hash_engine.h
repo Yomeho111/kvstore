@@ -20,6 +20,6 @@ namespace kv_engine
     private:
         base_component::HashTable<string, string> data;
     };
-}
+} // namespace kv_engine
 
 #endif // __HASH_ENGINE_H

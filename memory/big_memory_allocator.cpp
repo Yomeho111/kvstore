@@ -23,4 +23,4 @@ namespace memory
         ::free(ptr_start);
         return 0;
     }
-}
+} // namespace memory

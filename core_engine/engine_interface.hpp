@@ -203,5 +203,5 @@ namespace kv_engine
     private:
         kv_persistent::StoreEngine store_engine;
     };
-}
+} // namespace kv_engine
 #endif // __ENGINE_INTERFACE_H

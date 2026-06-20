@@ -27,7 +27,9 @@ namespace allocator
         MyAllocator() = default;
 
         template <typename U>
-        MyAllocator(const MyAllocator<U> &) {}
+        MyAllocator(const MyAllocator<U> &)
+        {
+        }
 
         T *allocate(std::size_t n)
         {
@@ -73,6 +75,6 @@ namespace allocator
     {
         return false;
     }
-}
+} // namespace allocator
 
 #endif // __ALLOCATOR_H

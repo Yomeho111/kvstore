@@ -60,6 +60,6 @@ namespace kv_protocal
     };
 
     constexpr inline const size_t HEADER_SIZE = sizeof(struct HeaderInfo);
-}
+} // namespace kv_protocal
 
 #endif // __KV_HEADER_H

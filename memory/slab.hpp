@@ -63,7 +63,8 @@ namespace memory
         }
 
     private:
-        SlabN() : next_free_(nullptr) {}
+        SlabN()
+            : next_free_(nullptr) {}
         ~SlabN()
         {
             for (auto *ptr : page_lst_)
@@ -129,6 +130,6 @@ namespace memory
     template <typename T>
     using Slab = SlabN<ceil_pow2_and_lower8(sizeof(T))>;
 
-}
+} // namespace memory
 
 #endif // __SLAB_H

@@ -13,4 +13,4 @@ namespace allocator
     {
         alloc.deallocate((char *)ptr, 0);
     }
-}
+} // namespace allocator

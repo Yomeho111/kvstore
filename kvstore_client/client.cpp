@@ -449,4 +449,4 @@ namespace kv_client
         response->responses = nullptr;
     }
 
-}
+} // namespace kv_client

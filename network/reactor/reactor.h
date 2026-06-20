@@ -90,7 +90,8 @@ namespace reactor
     class TcpServers : public TcpBase
     {
     public:
-        TcpServers(uint16_t port) : _port(port) {}
+        TcpServers(uint16_t port)
+            : _port(port) {}
 
         int init();
 
@@ -119,7 +120,8 @@ namespace reactor
     class TcpSlaveServer : public TcpBase
     {
     public:
-        TcpSlaveServer(uint16_t port, const char *ip) : _port(port), _ip(ip), _heartbeat(false) {}
+        TcpSlaveServer(uint16_t port, const char *ip)
+            : _port(port), _ip(ip), _heartbeat(false) {}
 
         int init();
 
@@ -184,5 +186,5 @@ namespace reactor
         std::mutex _mtx;
     };
 
-}
+} // namespace reactor
 #endif // __REACTOR_H

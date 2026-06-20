@@ -23,9 +23,11 @@ namespace kv_timer
         {
             Timer() = default;
             ~Timer() = default;
-            Timer(int id, Callback cb) : timer_id(id), callback(std::move(cb)) {}
+            Timer(int id, Callback cb)
+                : timer_id(id), callback(std::move(cb)) {}
             Timer(const Timer &) = delete;
-            Timer(Timer &&other) noexcept : timer_id(other.timer_id), callback(std::move(other.callback))
+            Timer(Timer &&other) noexcept
+                : timer_id(other.timer_id), callback(std::move(other.callback))
             {
                 other.timer_id = -1;
             }
@@ -83,6 +85,6 @@ namespace kv_timer
         TimerMap timers_;
         IdMap id_to_iter_;
     };
-}
+} // namespace kv_timer
 
 #endif // __TIMER_H

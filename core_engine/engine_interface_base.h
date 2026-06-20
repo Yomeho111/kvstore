@@ -25,6 +25,6 @@ namespace kv_engine
 
         virtual int init() noexcept = 0;
     };
-}
+} // namespace kv_engine
 
 #endif // __ENGINE_INTERFACE_BASE_H

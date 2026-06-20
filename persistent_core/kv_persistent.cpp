@@ -385,4 +385,4 @@ namespace kv_persistent
         return 0;
     }
 
-}
+} // namespace kv_persistent

@@ -254,64 +254,64 @@ namespace kv_protocal
 
             switch (command)
             {
-            case KVS_SET:
-            {
-                ret = _engine.set(key, key_length, value, value_length, timeout);
-                if (ret == 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "OK\r\n");
-                else if (ret < 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "ERROR\r\n");
-                else if (ret > 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "EXIST\r\n");
-                break;
-            }
-            case KVS_GET:
-            {
-                ret = _engine.get(key, key_length, &value);
-                if (ret > 0)
-                    wbuf_size = ret;
-                else if (ret < 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "ERROR\r\n");
-                else if (ret == 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "NOT EXIST\r\n");
-                break;
-            }
-            case KVS_MOD:
-            {
-                ret = _engine.modify(key, key_length, value, value_length, timeout);
-                if (ret == 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "OK\r\n");
-                else if (ret < 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "ERROR\r\n");
-                else if (ret > 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "NOT EXIST\r\n");
-                break;
-            }
-            case KVS_DEL:
-            {
-                ret = _engine.del(key, key_length);
-                if (ret == 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "OK\r\n");
-                else if (ret < 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "ERROR\r\n");
-                else if (ret > 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "NOT EXIST\r\n");
-                break;
-            }
-            case KVS_EXIST:
-            {
-                ret = _engine.exist(key, key_length);
-                if (ret == 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "EXIST\r\n");
-                else if (ret < 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "ERROR\r\n");
-                else if (ret > 0)
-                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "NOT EXIST\r\n");
-                break;
-            }
-            default:
-                wbuf_size = snprintf(wbuf, BUFFER_SIZE, "Invalid Command\r\n");
-                break;
+                case KVS_SET:
+                {
+                    ret = _engine.set(key, key_length, value, value_length, timeout);
+                    if (ret == 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "OK\r\n");
+                    else if (ret < 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "ERROR\r\n");
+                    else if (ret > 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "EXIST\r\n");
+                    break;
+                }
+                case KVS_GET:
+                {
+                    ret = _engine.get(key, key_length, &value);
+                    if (ret > 0)
+                        wbuf_size = ret;
+                    else if (ret < 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "ERROR\r\n");
+                    else if (ret == 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "NOT EXIST\r\n");
+                    break;
+                }
+                case KVS_MOD:
+                {
+                    ret = _engine.modify(key, key_length, value, value_length, timeout);
+                    if (ret == 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "OK\r\n");
+                    else if (ret < 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "ERROR\r\n");
+                    else if (ret > 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "NOT EXIST\r\n");
+                    break;
+                }
+                case KVS_DEL:
+                {
+                    ret = _engine.del(key, key_length);
+                    if (ret == 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "OK\r\n");
+                    else if (ret < 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "ERROR\r\n");
+                    else if (ret > 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "NOT EXIST\r\n");
+                    break;
+                }
+                case KVS_EXIST:
+                {
+                    ret = _engine.exist(key, key_length);
+                    if (ret == 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "EXIST\r\n");
+                    else if (ret < 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "ERROR\r\n");
+                    else if (ret > 0)
+                        wbuf_size = snprintf(wbuf, BUFFER_SIZE, "NOT EXIST\r\n");
+                    break;
+                }
+                default:
+                    wbuf_size = snprintf(wbuf, BUFFER_SIZE, "Invalid Command\r\n");
+                    break;
             }
 
             // *response = (char *)allocator::kv_malloc(wbuf_size);
@@ -475,6 +475,6 @@ namespace kv_protocal
 #elif defined(SKIPLIST_ENGINE)
     using KvStoreProtocal = KvProtocal<kv_engine::SkiplistEngine>;
 #endif
-}
+} // namespace kv_protocal
 
 #endif // __KV_PROTOCAL_HPP

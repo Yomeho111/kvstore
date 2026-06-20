@@ -256,4 +256,4 @@ namespace hpc_coroutine
 
         swapcontext(&ctx_, sched_->get_ctx());
     }
-}
+} // namespace hpc_coroutine

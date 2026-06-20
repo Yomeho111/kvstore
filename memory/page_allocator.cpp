@@ -92,4 +92,4 @@ namespace memory
         }
     }
 
-}
+} // namespace memory

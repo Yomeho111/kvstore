@@ -404,7 +404,9 @@ namespace hpc_coroutine
             return -1;
         }
 
-        struct sockaddr_in server_addr{};
+        struct sockaddr_in server_addr
+        {
+        };
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(_port);
 
@@ -438,7 +440,9 @@ namespace hpc_coroutine
             return;
         }
 
-        struct sockaddr_in server_addr{};
+        struct sockaddr_in server_addr
+        {
+        };
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(port);
 
@@ -473,4 +477,4 @@ namespace hpc_coroutine
         hpc_coroutine::CoroutineSched::get_coroutine_sched()->run();
         return 0;
     }
-}
+} // namespace hpc_coroutine

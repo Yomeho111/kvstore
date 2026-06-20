@@ -33,4 +33,4 @@ namespace replicate
         std::lock_guard lk{lock_};
         return sync_idx_;
     }
-}
+} // namespace replicate

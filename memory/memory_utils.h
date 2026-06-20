@@ -24,7 +24,8 @@ namespace memory
     class SpinLock
     {
     public:
-        SpinLock() : flag_(ATOMIC_FLAG_INIT) {}
+        SpinLock()
+            : flag_(ATOMIC_FLAG_INIT) {}
         ~SpinLock() {}
 
         void lock()
@@ -79,6 +80,6 @@ namespace memory
             return 1ul << (index + PADDING_INDEX);
         }
     };
-}
+} // namespace memory
 
 #endif // KVSTORE_MEMORY_UTILS_H

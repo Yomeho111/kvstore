@@ -261,30 +261,30 @@ namespace proactor
 
         switch (conn->status.status)
         {
-        case network::READ_NUM_REQUEST:
-        {
-            if (network::alloc_single_iovec(&conn->r_iovec, kv_protocal::NUM_HEADER_SIZE) != 0)
+            case network::READ_NUM_REQUEST:
             {
-                perror("error malloc");
-                return -1;
+                if (network::alloc_single_iovec(&conn->r_iovec, kv_protocal::NUM_HEADER_SIZE) != 0)
+                {
+                    perror("error malloc");
+                    return -1;
+                }
+                io_uring_prep_recv(sqe, fd, conn->r_iovec[0].iov_base, conn->r_iovec[0].iov_len, flags | MSG_WAITALL);
+                break;
             }
-            io_uring_prep_recv(sqe, fd, conn->r_iovec[0].iov_base, conn->r_iovec[0].iov_len, flags | MSG_WAITALL);
-            break;
-        }
-        case network::READ_HEADER:
-        {
-            io_uring_prep_recv(sqe, fd, conn->status.req_info, conn->status.num_request * kv_protocal::HEADER_SIZE, flags | MSG_WAITALL);
-            break;
-        }
-        case network::READ_BODY:
-        {
-            if (prepare_iovec_io(conn, conn->r_iovec, conn->status.num_request) != 0)
+            case network::READ_HEADER:
+            {
+                io_uring_prep_recv(sqe, fd, conn->status.req_info, conn->status.num_request * kv_protocal::HEADER_SIZE, flags | MSG_WAITALL);
+                break;
+            }
+            case network::READ_BODY:
+            {
+                if (prepare_iovec_io(conn, conn->r_iovec, conn->status.num_request) != 0)
+                    return -1;
+                io_uring_prep_readv(sqe, fd, conn->io_iovec, conn->io_iovec_size, 0);
+                break;
+            }
+            default:
                 return -1;
-            io_uring_prep_readv(sqe, fd, conn->io_iovec, conn->io_iovec_size, 0);
-            break;
-        }
-        default:
-            return -1;
         }
 
         memcpy(&sqe->user_data, &conn, sizeof(conn));
@@ -397,67 +397,27 @@ namespace proactor
 
         switch (conn->status.status)
         {
-        case network::READ_NUM_REQUEST:
-        {
-            if (count != kv_protocal::NUM_HEADER_SIZE)
+            case network::READ_NUM_REQUEST:
             {
-                perror("corrupted number of request");
-                goto clean;
-            }
-
-            uint32_t num_request = static_cast<kv_protocal::NumHeader *>(conn->r_iovec[0].iov_base)->num_request;
-            network::free_single_iovec(&conn->r_iovec);
-
-            if (num_request > 0)
-            {
-                if (kv_protocal::KvStoreProtocal::instance().process_num_request(&conn->status, num_request) != 0)
+                if (count != kv_protocal::NUM_HEADER_SIZE)
                 {
-                    perror("Processing number of request failure");
-                    ret = -1;
+                    perror("corrupted number of request");
                     goto clean;
                 }
-            }
 
-            if (set_event_recv(conn->fd, conn, 0) == -1)
-            {
-                perror("Error set_event_recv");
-                ret = -1;
-                goto clean;
-            }
-            break;
-        }
+                uint32_t num_request = static_cast<kv_protocal::NumHeader *>(conn->r_iovec[0].iov_base)->num_request;
+                network::free_single_iovec(&conn->r_iovec);
 
-        case network::READ_HEADER:
-        {
-            if (count != static_cast<int>(conn->status.num_request * kv_protocal::HEADER_SIZE))
-            {
-                perror("corrupted header");
-                goto clean;
-            }
+                if (num_request > 0)
+                {
+                    if (kv_protocal::KvStoreProtocal::instance().process_num_request(&conn->status, num_request) != 0)
+                    {
+                        perror("Processing number of request failure");
+                        ret = -1;
+                        goto clean;
+                    }
+                }
 
-            if (kv_protocal::KvStoreProtocal::instance().process_header(&conn->status, &conn->r_iovec) != 0)
-            {
-                perror("Processing header failure");
-                ret = -1;
-                goto clean;
-            }
-
-            if (set_event_recv(conn->fd, conn, 0) == -1)
-            {
-                perror("Error set_event_recv");
-                ret = -1;
-                goto clean;
-            }
-            break;
-        }
-
-        case network::READ_BODY:
-        {
-            conn->io_bytes_done += static_cast<size_t>(count);
-            free_io_iovec(conn);
-
-            if (conn->io_bytes_done < conn->io_bytes_total)
-            {
                 if (set_event_recv(conn->fd, conn, 0) == -1)
                 {
                     perror("Error set_event_recv");
@@ -467,39 +427,79 @@ namespace proactor
                 break;
             }
 
-            reset_iovec_io(conn);
-
-            count = kv_protocal::KvStoreProtocal::instance().process_body(&conn->status, conn->r_iovec, &conn->w_iovec);
-            if (count < 0)
+            case network::READ_HEADER:
             {
-                perror("Error handling body");
-                ret = -1;
-                goto clean;
-            }
-            if (conn->status.status == network::SEND_RESPONSE)
-            {
-                if (set_event_send(conn->fd, conn, 0) == -1)
+                if (count != static_cast<int>(conn->status.num_request * kv_protocal::HEADER_SIZE))
                 {
-                    perror("Error set_event_send");
+                    perror("corrupted header");
+                    goto clean;
+                }
+
+                if (kv_protocal::KvStoreProtocal::instance().process_header(&conn->status, &conn->r_iovec) != 0)
+                {
+                    perror("Processing header failure");
                     ret = -1;
                     goto clean;
                 }
-            }
-            else
-            {
+
                 if (set_event_recv(conn->fd, conn, 0) == -1)
                 {
                     perror("Error set_event_recv");
                     ret = -1;
                     goto clean;
                 }
+                break;
             }
-            break;
-        }
-        default:
-            perror("Error recv status");
-            ret = -1;
-            goto clean;
+
+            case network::READ_BODY:
+            {
+                conn->io_bytes_done += static_cast<size_t>(count);
+                free_io_iovec(conn);
+
+                if (conn->io_bytes_done < conn->io_bytes_total)
+                {
+                    if (set_event_recv(conn->fd, conn, 0) == -1)
+                    {
+                        perror("Error set_event_recv");
+                        ret = -1;
+                        goto clean;
+                    }
+                    break;
+                }
+
+                reset_iovec_io(conn);
+
+                count = kv_protocal::KvStoreProtocal::instance().process_body(&conn->status, conn->r_iovec, &conn->w_iovec);
+                if (count < 0)
+                {
+                    perror("Error handling body");
+                    ret = -1;
+                    goto clean;
+                }
+                if (conn->status.status == network::SEND_RESPONSE)
+                {
+                    if (set_event_send(conn->fd, conn, 0) == -1)
+                    {
+                        perror("Error set_event_send");
+                        ret = -1;
+                        goto clean;
+                    }
+                }
+                else
+                {
+                    if (set_event_recv(conn->fd, conn, 0) == -1)
+                    {
+                        perror("Error set_event_recv");
+                        ret = -1;
+                        goto clean;
+                    }
+                }
+                break;
+            }
+            default:
+                perror("Error recv status");
+                ret = -1;
+                goto clean;
         }
 
         return ret;
@@ -683,30 +683,30 @@ namespace proactor
 
         switch (conn->status.status)
         {
-        case network::READ_NUM_REQUEST:
-        {
-            if (network::alloc_single_iovec(&conn->r_iovec, kv_protocal::NUM_HEADER_SIZE) != 0)
+            case network::READ_NUM_REQUEST:
             {
-                perror("error malloc");
-                return -1;
+                if (network::alloc_single_iovec(&conn->r_iovec, kv_protocal::NUM_HEADER_SIZE) != 0)
+                {
+                    perror("error malloc");
+                    return -1;
+                }
+                io_uring_prep_recv(sqe, fd, conn->r_iovec[0].iov_base, conn->r_iovec[0].iov_len, flags | MSG_WAITALL);
+                break;
             }
-            io_uring_prep_recv(sqe, fd, conn->r_iovec[0].iov_base, conn->r_iovec[0].iov_len, flags | MSG_WAITALL);
-            break;
-        }
-        case network::READ_HEADER:
-        {
-            io_uring_prep_recv(sqe, fd, conn->status.req_info, conn->status.num_request * kv_protocal::HEADER_SIZE, flags | MSG_WAITALL);
-            break;
-        }
-        case network::READ_BODY:
-        {
-            if (prepare_iovec_io(conn, conn->r_iovec, conn->status.num_request) != 0)
+            case network::READ_HEADER:
+            {
+                io_uring_prep_recv(sqe, fd, conn->status.req_info, conn->status.num_request * kv_protocal::HEADER_SIZE, flags | MSG_WAITALL);
+                break;
+            }
+            case network::READ_BODY:
+            {
+                if (prepare_iovec_io(conn, conn->r_iovec, conn->status.num_request) != 0)
+                    return -1;
+                io_uring_prep_readv(sqe, fd, conn->io_iovec, conn->io_iovec_size, 0);
+                break;
+            }
+            default:
                 return -1;
-            io_uring_prep_readv(sqe, fd, conn->io_iovec, conn->io_iovec_size, 0);
-            break;
-        }
-        default:
-            return -1;
         }
 
         memcpy(&sqe->user_data, &conn, sizeof(conn));
@@ -748,74 +748,34 @@ namespace proactor
 
         switch (conn->status.status)
         {
-        case network::READ_NUM_REQUEST:
-        {
-            if (count != kv_protocal::NUM_HEADER_SIZE)
+            case network::READ_NUM_REQUEST:
             {
-                perror("corrupted number of request");
-                goto clean;
-            }
+                if (count != kv_protocal::NUM_HEADER_SIZE)
+                {
+                    perror("corrupted number of request");
+                    goto clean;
+                }
 
-            uint32_t num_request = static_cast<kv_protocal::NumHeader *>(conn->r_iovec[0].iov_base)->num_request;
-            network::free_single_iovec(&conn->r_iovec);
+                uint32_t num_request = static_cast<kv_protocal::NumHeader *>(conn->r_iovec[0].iov_base)->num_request;
+                network::free_single_iovec(&conn->r_iovec);
 
-            if (num_request == 0)
-            {
-                // no-update heartbeat response: exchange done, go idle
-                conn->heartbeat_pending = false;
-                conn->expect_reply = false;
-                conn->status.status = network::READ_NUM_REQUEST;
-                conn->status.num_request = 0;
-                break;
-            }
+                if (num_request == 0)
+                {
+                    // no-update heartbeat response: exchange done, go idle
+                    conn->heartbeat_pending = false;
+                    conn->expect_reply = false;
+                    conn->status.status = network::READ_NUM_REQUEST;
+                    conn->status.num_request = 0;
+                    break;
+                }
 
-            if (kv_protocal::KvStoreProtocal::instance().process_num_request(&conn->status, num_request) != 0)
-            {
-                perror("Processing number of request failure");
-                ret = -1;
-                goto clean;
-            }
+                if (kv_protocal::KvStoreProtocal::instance().process_num_request(&conn->status, num_request) != 0)
+                {
+                    perror("Processing number of request failure");
+                    ret = -1;
+                    goto clean;
+                }
 
-            if (set_event_recv(conn->fd, conn, 0) == -1)
-            {
-                perror("Error set_event_recv");
-                ret = -1;
-                goto clean;
-            }
-            break;
-        }
-
-        case network::READ_HEADER:
-        {
-            if (count != static_cast<int>(conn->status.num_request * kv_protocal::HEADER_SIZE))
-            {
-                perror("corrupted header");
-                goto clean;
-            }
-
-            if (kv_protocal::KvStoreProtocal::instance().process_header(&conn->status, &conn->r_iovec) != 0)
-            {
-                perror("Processing header failure");
-                ret = -1;
-                goto clean;
-            }
-
-            if (set_event_recv(conn->fd, conn, 0) == -1)
-            {
-                perror("Error set_event_recv");
-                ret = -1;
-                goto clean;
-            }
-            break;
-        }
-
-        case network::READ_BODY:
-        {
-            conn->io_bytes_done += static_cast<size_t>(count);
-            free_io_iovec(conn);
-
-            if (conn->io_bytes_done < conn->io_bytes_total)
-            {
                 if (set_event_recv(conn->fd, conn, 0) == -1)
                 {
                     perror("Error set_event_recv");
@@ -825,39 +785,79 @@ namespace proactor
                 break;
             }
 
-            reset_iovec_io(conn);
-
-            count = kv_protocal::KvStoreProtocal::instance().process_body(&conn->status, conn->r_iovec, &conn->w_iovec);
-            if (count < 0)
+            case network::READ_HEADER:
             {
-                perror("Error handling body");
-                ret = -1;
-                goto clean;
-            }
-            if (conn->status.status == network::SEND_RESPONSE)
-            {
-                if (set_event_send(conn->fd, conn, 0) == -1)
+                if (count != static_cast<int>(conn->status.num_request * kv_protocal::HEADER_SIZE))
                 {
-                    perror("Error set_event_send");
+                    perror("corrupted header");
+                    goto clean;
+                }
+
+                if (kv_protocal::KvStoreProtocal::instance().process_header(&conn->status, &conn->r_iovec) != 0)
+                {
+                    perror("Processing header failure");
                     ret = -1;
                     goto clean;
                 }
-            }
-            else
-            {
+
                 if (set_event_recv(conn->fd, conn, 0) == -1)
                 {
                     perror("Error set_event_recv");
                     ret = -1;
                     goto clean;
                 }
+                break;
             }
-            break;
-        }
-        default:
-            perror("Error recv status");
-            ret = -1;
-            goto clean;
+
+            case network::READ_BODY:
+            {
+                conn->io_bytes_done += static_cast<size_t>(count);
+                free_io_iovec(conn);
+
+                if (conn->io_bytes_done < conn->io_bytes_total)
+                {
+                    if (set_event_recv(conn->fd, conn, 0) == -1)
+                    {
+                        perror("Error set_event_recv");
+                        ret = -1;
+                        goto clean;
+                    }
+                    break;
+                }
+
+                reset_iovec_io(conn);
+
+                count = kv_protocal::KvStoreProtocal::instance().process_body(&conn->status, conn->r_iovec, &conn->w_iovec);
+                if (count < 0)
+                {
+                    perror("Error handling body");
+                    ret = -1;
+                    goto clean;
+                }
+                if (conn->status.status == network::SEND_RESPONSE)
+                {
+                    if (set_event_send(conn->fd, conn, 0) == -1)
+                    {
+                        perror("Error set_event_send");
+                        ret = -1;
+                        goto clean;
+                    }
+                }
+                else
+                {
+                    if (set_event_recv(conn->fd, conn, 0) == -1)
+                    {
+                        perror("Error set_event_recv");
+                        ret = -1;
+                        goto clean;
+                    }
+                }
+                break;
+            }
+            default:
+                perror("Error recv status");
+                ret = -1;
+                goto clean;
         }
 
         return ret;
@@ -1019,4 +1019,4 @@ namespace proactor
         ConnPool::get_connpool()->clean_up_conn(_fd);
         io_uring_queue_exit(&_ring);
     }
-}
+} // namespace proactor

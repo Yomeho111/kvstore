@@ -14,8 +14,10 @@ namespace base_component
     {
         K key;
         V value;
-        ArrNode(const K &k, const V &v) : key(k), value(v) {}
-        ArrNode(K &&k, V &&v) : key(std::move(k)), value(std::move(v)) {}
+        ArrNode(const K &k, const V &v)
+            : key(k), value(v) {}
+        ArrNode(K &&k, V &&v)
+            : key(std::move(k)), value(std::move(v)) {}
         ArrNode() = default;
 
         ArrNode(ArrNode &&) noexcept = default;
@@ -203,6 +205,6 @@ namespace base_component
         size_t capacity_{0};
         NodeType **vec_{nullptr};
     };
-}
+} // namespace base_component
 
 #endif // __ARRAY_H
