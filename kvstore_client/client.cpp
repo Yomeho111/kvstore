@@ -330,6 +330,12 @@ namespace kv_client
         for (uint32_t i = 0; i < num_request; i++)
         {
             req_info[i].command = command_to_idx(requests[i].command);
+            if (req_info[i].command == kv_protocal::KVS_INVALID)
+            {
+                fprintf(stderr, "Invalid command: %s\r\n", requests[i].command.c_str());
+                free_request_buffers(req_info, nullptr);
+                return -1;
+            }
             req_info[i].key_length = static_cast<uint32_t>(requests[i].key.size());
             req_info[i].body_length = static_cast<uint32_t>(requests[i].key.size() + requests[i].value.size());
             req_info[i].timeout = requests[i].timeout;

@@ -46,7 +46,8 @@ namespace kv_engine
             if (node)
                 return 1;
 
-            base.insert(key_s, val_s);
+            if (base.insert(key_s, val_s) < 0)
+                return -1;
 
             if (to_disk && store_engine.dump_record(kv_protocal::KVS_SET, key_s, val_s) < 0)
                 return -2;

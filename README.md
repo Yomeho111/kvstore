@@ -1,2 +1,358 @@
+# KVStore
+
+A high-performance, persistent, in-memory key–value store written in modern C++20.
+
+KVStore is a learning-oriented yet feature-complete storage server. It is built around
+**pluggable networking models** (Reactor / Proactor / Coroutine), **pluggable storage
+engines** (Red-Black Tree / Hash / Skiplist / Array), an **append-only persistence layer**
+with crash recovery, **master–slave replication**, **per-key TTL/timeout expiration**, and
+an optional **custom memory pool allocator** (tcmalloc-style).
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Repository Layout](#repository-layout)
+- [Build](#build)
+  - [Prerequisites](#prerequisites)
+  - [Build Options](#build-options)
+  - [Build Examples](#build-examples)
+- [Running the Server](#running-the-server)
+  - [Standalone (Master)](#standalone-master)
+  - [Master with Replication](#master-with-replication)
+  - [Slave / Replica](#slave--replica)
+- [Using the Client](#using-the-client)
+  - [Interactive CLI](#interactive-cli)
+  - [Command Reference](#command-reference)
+  - [TTL / Timeout Syntax](#ttl--timeout-syntax)
+- [Wire Protocol](#wire-protocol)
+- [Persistence Format](#persistence-format)
+- [Component Guide](#component-guide)
+- [Testing](#testing)
+- [License](#license)
+
+---
+
+## Features
+
+- **Multiple network backends**, selected at build time:
+  - `REACTOR` — epoll-based, non-blocking, callback-driven event loop.
+  - `PROACTOR` — `io_uring`-based asynchronous I/O (requires `liburing`).
+  - `COROUTINE` — stackful coroutine server.
+- **Pluggable storage engines** behind a common `EngineInterface`:
+  - `RBTREE_ENGINE` (default) — ordered Red-Black tree.
+  - `HASH_ENGINE` — hash table.
+  - `SKIPLIST_ENGINE` — skip list.
+  - `ARRAY_ENGINE` — simple array-backed store.
+- **Durable persistence** via an append-only write-ahead log with 512 MB file
+  rotation and full replay-based crash recovery.
+- **Master–slave replication** for read scaling / high availability.
+- **Per-key TTL** — `SET`/`MOD` accept an expiration that is scheduled by a timer manager.
+- **Batched requests** — multiple operations can be pipelined in a single round trip.
+- **Optional custom memory pool** — thread-cache → central-pool → page-allocator design,
+  or link against `tcmalloc` / `jemalloc`.
+- **Built without C++ exceptions** by default (`-fno-exceptions`) for predictable performance.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TD
+    Client[KvClient / CLI] -- TCP, binary protocol --> Net
+
+    subgraph Server
+        Net[Network Layer<br/>Reactor / Proactor / Coroutine]
+        Proto[Protocol Layer<br/>KvStoreProtocal]
+        Engine[Storage Engine<br/>RBTree / Hash / Skiplist / Array]
+        Store[Persistence Layer<br/>StoreEngine append-only log]
+        Timer[Timer Manager<br/>TTL expiration]
+        Rep[Replication Manager<br/>master to slave]
+    end
+
+    Net --> Proto --> Engine
+    Engine --> Store
+    Engine --> Timer
+    Engine --> Rep
+    Store -- on startup replay --> Engine
+    Rep -- ship records --> Slave[(Slave Server)]
+```
+
+**Write path:** `request → protocol → engine.set/modify/del → SpinLock → in-memory structure
+→ StoreEngine.dump_record (write + flush to disk) → replication enqueue → release lock → respond`.
+
+**Read path:** `request → protocol → engine.get → SpinLock → in-memory lookup → copy value →
+respond` (no disk access).
+
+**Recovery path:** `startup → engine.init → StoreEngine.load_record → scan data/kv_*.dt →
+replay every record in order with to_disk=false`.
+
+---
+
+## Repository Layout
+
+| Path | Description |
+| --- | --- |
+| [main.cpp](main.cpp) | Server entry point; arg parsing for master/slave/replication. |
+| [CMakeLists.txt](CMakeLists.txt) | Build configuration and feature toggles. |
+| [core_engine/](core_engine/) | Storage engines and the abstract `EngineInterface`. |
+| [base_component/](base_component/) | Data structures: `rbtree`, `hash`, `skiplist`, `array`. |
+| [persistent_core/](persistent_core/) | `StoreEngine` — append-only write-ahead log + recovery. |
+| [network/](network/) | Network backends: `reactor/`, `proactor/`, `my_coroutine/`. |
+| [protocal/](protocal/) | Wire protocol: headers (`kv_header.h`) and codec (`kv_protocal.hpp`). |
+| [replication/](replication/) | `RepManager` — master/slave replication. |
+| [timer/](timer/) | Timer manager for TTL / scheduled key expiration. |
+| [memory/](memory/) | Custom memory pool allocator (thread cache, central pool, page allocator, slab). |
+| [kvstore_client/](kvstore_client/) | `KvClient` library, interactive CLI, and test harness. |
+
+---
+
+## Build
+
+### Prerequisites
+
+- A C++20 compiler (GCC or Clang).
+- CMake ≥ 3.16.
+- POSIX threads.
+- For `PROACTOR` builds: **`liburing`** development headers/library.
+- Optional: `tcmalloc` (`gperftools`) or `jemalloc` if linking an external allocator.
+
+### Build Options
+
+All options are passed to CMake with `-D<OPTION>=<VALUE>`.
+
+| Option | Values | Default | Description |
+| --- | --- | --- | --- |
+| `NETWORK` | `REACTOR`, `PROACTOR`, `COROUTINE` | `REACTOR` | Network backend. |
+| `ENGINE` | `RBTREE_ENGINE`, `HASH_ENGINE`, `SKIPLIST_ENGINE`, `ARRAY_ENGINE` | `RBTREE_ENGINE` | Storage engine. |
+| `KVSTORE_PORT_NUM` | integer | `20` | Number of consecutive ports to listen on. |
+| `KVSTORE_ENABLE_TIMER` | `ON`/`OFF` | `OFF` | Enable connection timing logs. |
+| `ENABLE_MEMORY_POOL` | `ON`/`OFF` | `OFF` | Use the built-in memory pool allocator. |
+| `ENABLE_TCMALLOC` | `ON`/`OFF` | `OFF` | Link against tcmalloc. |
+| `ENABLE_JEMALLOC` | `ON`/`OFF` | `OFF` | Link against jemalloc. |
+| `ENABLE_CPP_EXCEPTIONS` | `ON`/`OFF` | `OFF` | Compile with C++ exceptions enabled. |
+| `CMAKE_BUILD_TYPE` | `Debug`/`Release` | `Debug` | Standard CMake build type. |
+
+> Note: `ENABLE_TCMALLOC` and `ENABLE_JEMALLOC` are mutually exclusive.
+
+### Build Examples
+
+Default build (Reactor + Red-Black tree engine):
+
+```bash
+cmake -S . -B build
+cmake --build build
+```
+
+Reactor with the built-in memory pool, single listening port:
+
+```bash
 cmake -S . -B build -DNETWORK=REACTOR -DKVSTORE_PORT_NUM=1 -DENABLE_MEMORY_POOL=ON
 cmake --build build
+```
+
+Proactor (`io_uring`) backend with the hash engine:
+
+```bash
+cmake -S . -B build -DNETWORK=PROACTOR -DENGINE=HASH_ENGINE
+cmake --build build
+```
+
+Release build with tcmalloc:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_TCMALLOC=ON
+cmake --build build
+```
+
+### Build Artifacts
+
+After building, the following executables are produced in `build/`:
+
+- `kvstore` — the server.
+- `kvstore_client` — interactive CLI client.
+- `kvstore_client_testcase` — client-driven test harness.
+
+---
+
+## Running the Server
+
+The server listens on a base port of **8050** (and the following `KVSTORE_PORT_NUM` ports).
+Persistent data is written to a `data/` directory in the current working directory.
+
+### Standalone (Master)
+
+```bash
+./build/kvstore
+```
+
+### Master with Replication
+
+Enable replication so slaves can sync from this node:
+
+```bash
+./build/kvstore --replicate
+```
+
+### Slave / Replica
+
+Start a node that syncs from a master. A slave always tracks updates locally so it can be
+promoted later:
+
+```bash
+./build/kvstore --slave <master_ip> <master_port>
+```
+
+Usage summary:
+
+```text
+Usage:
+  kvstore [--replicate]                       start as master (optionally enable replication)
+  kvstore --slave <master_ip> <master_port>   start as slave syncing from master
+```
+
+---
+
+## Using the Client
+
+### Interactive CLI
+
+Connect the CLI to a running server:
+
+```bash
+./build/kvstore_client <ip> <port>
+# e.g.
+./build/kvstore_client 127.0.0.1 8050
+```
+
+Then type commands, one per line:
+
+```text
+SET foo bar
+GET foo
+MOD foo baz
+EXIST foo
+DEL foo
+```
+
+### Command Reference
+
+| Command | Syntax | Description |
+| --- | --- | --- |
+| `SET` | `SET <key> <value> [timeout]` | Insert a key. Fails if the key already exists. |
+| `GET` | `GET <key>` | Return the value for a key. |
+| `MOD` | `MOD <key> <value> [timeout]` | Update an existing key. Fails if the key does not exist. |
+| `DEL` | `DEL <key>` | Delete a key. |
+| `EXIST` | `EXIST <key>` | Check whether a key exists. |
+
+### TTL / Timeout Syntax
+
+`SET` and `MOD` accept an optional trailing timeout token after the value. When the timeout
+elapses, the key is automatically deleted by the timer manager.
+
+Supported units:
+
+| Suffix | Meaning |
+| --- | --- |
+| `h` | hours |
+| `m` | minutes |
+| `s` | seconds |
+| `ms` | milliseconds |
+| `us` | microseconds |
+
+Examples:
+
+```text
+SET session abc123 30s
+SET cache value 500ms
+MOD token xyz 2h
+```
+
+---
+
+## Wire Protocol
+
+The protocol is a compact binary framing defined in [protocal/kv_header.h](protocal/kv_header.h).
+Requests and responses can be **batched** — a single round trip may carry multiple operations.
+
+**Request framing**
+
+```text
+NumHeader            { uint32 num_request }
+HeaderInfo[ N ]      { uint32 command, uint32 key_length, uint32 body_length,
+                       int sync_idx, TimeoutSpec timeout }
+Body[ N ]            key bytes followed by value bytes
+```
+
+**Commands** (`CommandIdx`):
+
+```text
+KVS_START, KVS_SET, KVS_GET, KVS_DEL, KVS_MOD,
+KVS_EXIST, KVS_REPR, KVS_RESP, KVS_END, KVS_INVALID
+```
+
+`KVS_REPR` / `KVS_RESP` are used by the replication protocol between master and slave.
+
+---
+
+## Persistence Format
+
+The persistence layer ([persistent_core/](persistent_core/)) is an **append-only
+write-ahead log**. Records are flushed to disk **before** the server responds to the client,
+giving write-ahead durability semantics.
+
+- Storage directory: `data/`
+- File naming: `kv_0.dt`, `kv_1.dt`, … (rotated when a file exceeds **512 MB**).
+- Record boundary magic: `0x4B565354`.
+
+**Binary record layout**
+
+```text
+[ MAGIC : 4 ] [ COMMAND : 2 ] [ KEY_LEN : 8 ] [ KEY ] [ VALUE_LEN : 8 ] [ VALUE ]
+COMMAND ∈ { KVS_SET = 1, KVS_DEL = 3, KVS_MOD = 4 }
+```
+
+On startup the engine scans `data/`, sorts the files by index, and replays every record in
+order (with `to_disk=false` to avoid re-logging), reconstructing the in-memory state. The log
+is append-only with no snapshots or compaction.
+
+---
+
+## Component Guide
+
+- **Engine interface** — [core_engine/engine_interface.hpp](core_engine/engine_interface.hpp)
+  defines the abstract API: `set`, `get`, `modify`, `del`, `exist`, `init`. All engines are
+  thread-safe via an internal `SpinLock`.
+- **Red-Black tree** — [base_component/rbtree/rbtree.hpp](base_component/rbtree/rbtree.hpp)
+  provides ordered O(log n) operations, with nodes allocated from a slab allocator.
+- **Network backends** — [network/reactor/](network/reactor/) (epoll),
+  [network/proactor/](network/proactor/) (`io_uring`), and
+  [network/my_coroutine/](network/my_coroutine/) (stackful coroutines).
+- **Memory pool** — [memory/](memory/) implements a tcmalloc-style allocator:
+  `thread_cache` → `central_pool` → `page_allocator`, with a `slab` for fixed-size objects.
+  Enabled with `-DENABLE_MEMORY_POOL=ON`.
+- **Timer** — [timer/timer.cpp](timer/timer.cpp) schedules TTL-based key deletions.
+- **Replication** — [replication/rep_manager.cpp](replication/rep_manager.cpp) ships write
+  records from master to slave using a ring buffer.
+
+---
+
+## Testing
+
+A client-driven test harness is built as `kvstore_client_testcase`. Start a server, then run:
+
+```bash
+# Terminal 1
+./build/kvstore
+
+# Terminal 2
+./build/kvstore_client_testcase
+```
+
+---
+
+## License
+
+See [LICENSE](LICENSE).

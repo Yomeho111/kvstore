@@ -70,10 +70,10 @@ namespace base_component
             nil = nullptr;
         }
 
-        void insert(NodeType *node)
+        int insert(NodeType *node)
         {
             if (node == nullptr)
-                return;
+                return -1;
             NodeType *prev = nil;
             NodeType *cur = root;
             while (cur != nil)
@@ -100,15 +100,22 @@ namespace base_component
             node->color = 'r';
             _insertFixed(node);
             count++;
+            return 0;
         }
 
-        void insert(const K &k, const V &v)
+        int insert(const K &k, const V &v)
         {
             void *ptr = memory::Slab<NodeType>::instance().malloc();
             if (ptr == nullptr)
-                return;
+                return -1;
             NodeType *node = new (ptr) NodeType(k, v);
-            insert(node);
+            if (insert(node) < 0)
+            {
+                node->~NodeType();
+                memory::Slab<NodeType>::instance().free(node);
+                return -1;
+            }
+            return 0;
         }
 
         void delNode(NodeType *node)

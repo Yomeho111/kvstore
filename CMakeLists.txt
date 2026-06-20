@@ -15,8 +15,8 @@ add_compile_options($<$<CONFIG:Debug>:-g> $<$<CONFIG:Debug>:-O0>)
 set(NETWORK "REACTOR" CACHE STRING "Network backend to build: REACTOR, PROACTOR, or COROUTINE")
 set_property(CACHE NETWORK PROPERTY STRINGS REACTOR PROACTOR COROUTINE)
 
-set(ENGINE "RBTREE_ENGINE" CACHE STRING "Storage engine to build: RBTREE_ENGINE")
-set_property(CACHE ENGINE PROPERTY STRINGS RBTREE_ENGINE)
+set(ENGINE "RBTREE_ENGINE" CACHE STRING "Storage engine to build: RBTREE_ENGINE, ARRAY_ENGINE HASH_ENGINE")
+set_property(CACHE ENGINE PROPERTY STRINGS RBTREE_ENGINE ARRAY_ENGINE HASH_ENGINE SKIPLIST_ENGINE)
 
 set(KVSTORE_PORT_NUM "20" CACHE STRING "Number of consecutive ports to listen on")
 option(KVSTORE_ENABLE_TIMER "Enable connection timing logs" OFF)
@@ -29,7 +29,7 @@ string(TOUPPER "${NETWORK}" NETWORK)
 string(TOUPPER "${ENGINE}" ENGINE)
 
 set(KVSTORE_NETWORK_OPTIONS REACTOR PROACTOR COROUTINE)
-set(KVSTORE_ENGINE_OPTIONS RBTREE_ENGINE)
+set(KVSTORE_ENGINE_OPTIONS RBTREE_ENGINE ARRAY_ENGINE HASH_ENGINE SKIPLIST_ENGINE)
 
 if(NOT NETWORK IN_LIST KVSTORE_NETWORK_OPTIONS)
     message(FATAL_ERROR "NETWORK must be one of: ${KVSTORE_NETWORK_OPTIONS}")
@@ -65,6 +65,9 @@ add_library(kvstore_core STATIC
     memory/thread_cache.cpp
     network/network_utils.cpp
     core_engine/rbtree_engine/rbtree_engine.cpp
+    core_engine/array_engine/array_engine.cpp
+    core_engine/hash_engine/hash_engine.cpp
+    core_engine/skiplist_engine/skiplist_engine.cpp
     persistent_core/kv_persistent.cpp
     timer/timer.cpp
     replication/rep_manager.cpp
@@ -78,6 +81,9 @@ target_include_directories(kvstore_core
         ${PROJECT_SOURCE_DIR}/protocal
         ${PROJECT_SOURCE_DIR}/persistent_core
         ${PROJECT_SOURCE_DIR}/base_component/rbtree
+        ${PROJECT_SOURCE_DIR}/base_component/array
+        ${PROJECT_SOURCE_DIR}/base_component/hash
+        ${PROJECT_SOURCE_DIR}/base_component/skiplist
         ${PROJECT_SOURCE_DIR}/timer
         ${PROJECT_SOURCE_DIR}/replication
 )

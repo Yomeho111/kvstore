@@ -13,6 +13,9 @@
 #include "engine_interface.hpp"
 #include "status.h"
 #include "rbtree_engine/rbtree_engine.h"
+#include "array_engine/array_engine.h"
+#include "hash_engine/hash_engine.h"
+#include "skiplist_engine/skiplist_engine.h"
 #include "allocator.h"
 #include "kv_header.h"
 #include "rep_manager.h"
@@ -465,6 +468,12 @@ namespace kv_protocal
 
 #ifdef RBTREE_ENGINE
     using KvStoreProtocal = KvProtocal<kv_engine::RbtreeEngine>;
+#elif defined(ARRAY_ENGINE)
+    using KvStoreProtocal = KvProtocal<kv_engine::ArrayEngine>;
+#elif defined(HASH_ENGINE)
+    using KvStoreProtocal = KvProtocal<kv_engine::HashEngine>;
+#elif defined(SKIPLIST_ENGINE)
+    using KvStoreProtocal = KvProtocal<kv_engine::SkiplistEngine>;
 #endif
 }
 

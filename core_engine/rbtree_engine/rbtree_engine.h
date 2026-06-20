@@ -5,9 +5,6 @@
 
 #include "engine_interface.hpp"
 #include "rbtree.hpp"
-#include "allocator.h"
-#include "kv_persistent.h"
-#include "memory_utils.h"
 
 namespace kv_engine
 {
