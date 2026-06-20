@@ -101,4 +101,4 @@ namespace memory
         CentralPool::instance().return_batch(start, index, return_batch);
         count_lst_[index] -= return_batch;
     }
-}
+} // namespace memory

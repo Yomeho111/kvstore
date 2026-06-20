@@ -164,6 +164,34 @@ namespace hpc_coroutine
         return 0;
     }
 
+    void CoroutineSched::co_sleep(int ms)
+    {
+        if (ms <= 0 || cur_co_ == nullptr)
+            return;
+
+        uint32_t co_id = cur_co_->get_id();
+        cur_co_->set_status(CoroutineStatus::WAIT);
+        sleep_table_[co_id] = std::move(cur_co_);
+        cur_co_ = nullptr;
+
+        // The timer callback runs from handle_expired() on the scheduler's main
+        // stack, so it is safe to move the coroutine back to the ready queue.
+        kv_timer::TimerManager::instance().add_event(
+            std::chrono::milliseconds(ms),
+            [this, co_id]()
+            {
+                auto it = sleep_table_.find(co_id);
+                if (it == sleep_table_.end())
+                    return;
+                Coroutine_t co = std::move(it->second);
+                sleep_table_.erase(it);
+                co->set_status(CoroutineStatus::READY);
+                ready_queue_.push(std::move(co));
+            });
+
+        sleep_table_[co_id]->yield();
+    }
+
     Coroutine::~Coroutine()
     {
         if (stack_ != nullptr)
@@ -228,4 +256,4 @@ namespace hpc_coroutine
 
         swapcontext(&ctx_, sched_->get_ctx());
     }
-}
+} // namespace hpc_coroutine

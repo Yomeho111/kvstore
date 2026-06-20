@@ -34,6 +34,6 @@ namespace memory
         SpinLock lock_lst_[FREE_LIST_SIZE];
     };
 
-}
+} // namespace memory
 
 #endif // __CENTRAL_POOL_H

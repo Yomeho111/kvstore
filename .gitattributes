@@ -1,0 +1,24 @@
+# Normalize line endings on checkin
+* text=auto eol=lf
+
+# Explicit C/C++ source handling
+*.c     text
+*.cc    text
+*.cpp   text
+*.cxx   text
+*.h     text
+*.hpp   text
+*.hxx   text
+
+# Build / config
+CMakeLists.txt text
+*.cmake        text
+*.md           text
+*.yml          text
+*.yaml         text
+
+# Binary data store files — never normalize/diff
+*.dt   binary
+*.o    binary
+*.a    binary
+*.so   binary

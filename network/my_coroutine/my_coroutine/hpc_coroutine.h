@@ -69,9 +69,14 @@ namespace hpc_coroutine
 
         int process_epoll();
 
+        // Yield the current coroutine back to the scheduler for `ms` milliseconds.
+        // While sleeping, the scheduler runs on its own (main) stack, so the
+        // current coroutine's stack is not active during the wait.
+        void co_sleep(int ms);
+
         bool empty() noexcept
         {
-            return ready_queue_.empty() && wait_table_.empty();
+            return ready_queue_.empty() && wait_table_.empty() && sleep_table_.empty();
         }
 
         // do schedule if there is no events
@@ -79,7 +84,8 @@ namespace hpc_coroutine
 
     private:
         // singleton
-        CoroutineSched(int stack_size) : epfd_(-1), spawned_coroutines_(0), stack_(nullptr), stack_size_(stack_size ? stack_size : MAX_STACK_SIZE), events_(nullptr)
+        CoroutineSched(int stack_size)
+            : epfd_(-1), spawned_coroutines_(0), stack_(nullptr), stack_size_(stack_size ? stack_size : MAX_STACK_SIZE), events_(nullptr)
         {
         }
         ~CoroutineSched();
@@ -99,14 +105,16 @@ namespace hpc_coroutine
         size_t stack_size_;
         struct epoll_event *events_;
         ucontext_t main_ctx_;
-        std::unordered_map<uint32_t, Coroutine_t> wait_table_; // id: Coroutine
+        std::unordered_map<uint32_t, Coroutine_t> wait_table_;  // id: Coroutine
+        std::unordered_map<uint32_t, Coroutine_t> sleep_table_; // id: Coroutine (timed sleep)
         std::queue<Coroutine_t> ready_queue_;
     };
 
     class Coroutine
     {
     public:
-        Coroutine(uint32_t id, CoroutineSched *sched, std::function<void()> func) : is_ep_(false), fd_(-1), id_(id), status_(CoroutineStatus::NEW), stack_(nullptr), sched_(sched), stack_size_(0), func_(std::move(func)) {}
+        Coroutine(uint32_t id, CoroutineSched *sched, std::function<void()> func)
+            : is_ep_(false), fd_(-1), id_(id), status_(CoroutineStatus::NEW), stack_(nullptr), sched_(sched), stack_size_(0), func_(std::move(func)) {}
         ~Coroutine();
 
         void resume();
@@ -165,6 +173,6 @@ namespace hpc_coroutine
         std::function<void()> func_;
         ucontext_t ctx_;
     };
-}
+} // namespace hpc_coroutine
 
 #endif // __HPC_COROUTINE_H

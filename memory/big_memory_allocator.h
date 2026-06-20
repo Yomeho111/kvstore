@@ -26,6 +26,6 @@ namespace memory
         BigMemoryAllocator &operator=(const BigMemoryAllocator &) = delete;
         BigMemoryAllocator &operator=(BigMemoryAllocator &&) = delete;
     };
-}
+} // namespace memory
 
 #endif // __BIG_MEMORY_ALLOCATOR

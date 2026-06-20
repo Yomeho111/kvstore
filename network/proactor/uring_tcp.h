@@ -45,6 +45,8 @@ namespace proactor
     struct Conn
     {
         bool is_used;
+        bool heartbeat_pending;
+        bool expect_reply;
         uint16_t event;
         uint16_t addr_idx;
         int fd;
@@ -86,7 +88,8 @@ namespace proactor
     class TcpServers
     {
     public:
-        TcpServers(uint16_t port) : _port(port) {}
+        TcpServers(uint16_t port)
+            : _port(port) {}
 
         int init();
 
@@ -115,6 +118,42 @@ namespace proactor
         sockaddr_in _sock_in_list[PORT_NUM] = {0};
         socklen_t _socklen_list[PORT_NUM] = {0};
         uint16_t _port;
+    };
+
+    class TcpSlaveServer
+    {
+    public:
+        TcpSlaveServer(uint16_t port, const char *ip)
+            : _heartbeat(false), _port(port), _fd(-1), _ip(ip) {}
+
+        int init();
+
+        int start_eventloop();
+
+        ~TcpSlaveServer();
+
+    private:
+        int init_client();
+
+        int set_event_recv(int fd, Conn *conn, int flags);
+
+        int set_event_send(int fd, Conn *conn, int flags);
+
+        int recv_cb(Conn *conn, struct io_uring_cqe *cqe);
+
+        int send_cb(Conn *conn, struct io_uring_cqe *cqe);
+
+        TcpSlaveServer(const TcpSlaveServer &) = delete;
+        TcpSlaveServer(TcpSlaveServer &&) = delete;
+
+        TcpSlaveServer &operator=(const TcpSlaveServer &) = delete;
+        TcpSlaveServer &operator=(TcpSlaveServer &&) = delete;
+
+        bool _heartbeat;
+        uint16_t _port;
+        int _fd;
+        const char *_ip;
+        struct io_uring _ring;
     };
 
     class Timer
@@ -153,6 +192,6 @@ namespace proactor
         timeval _begin;
         std::mutex _mtx;
     };
-}
+} // namespace proactor
 
 #endif // __URING_TCP_H

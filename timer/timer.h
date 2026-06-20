@@ -6,6 +6,7 @@
 #include <functional>
 #include <map>
 #include <unordered_map>
+#include <memory>
 
 #include "allocator.h"
 #include "memory_utils.h"
@@ -20,14 +21,38 @@ namespace kv_timer
 
         struct Timer
         {
-            int TimerId;
+            Timer() = default;
+            ~Timer() = default;
+            Timer(int id, Callback cb)
+                : timer_id(id), callback(std::move(cb)) {}
+            Timer(const Timer &) = delete;
+            Timer(Timer &&other) noexcept
+                : timer_id(other.timer_id), callback(std::move(other.callback))
+            {
+                other.timer_id = -1;
+            }
+
+            Timer &operator=(const Timer &) = delete;
+            Timer &operator=(Timer &&other)
+            {
+                if (this != &other)
+                {
+                    timer_id = other.timer_id;
+                    callback = std::move(other.callback);
+                    other.timer_id = -1;
+                }
+                return *this;
+            }
+            int timer_id;
             Callback callback;
         };
 
-        using ValueType = std::pair<const TimePoint, Timer>;
+        using Timer_t = std::unique_ptr<Timer>;
+
+        using ValueType = std::pair<const TimePoint, Timer_t>;
         using TimerMap = std::multimap<
             TimePoint,
-            Timer,
+            Timer_t,
             std::less<TimePoint>,
             allocator::MyAllocator<ValueType>>;
 
@@ -60,6 +85,6 @@ namespace kv_timer
         TimerMap timers_;
         IdMap id_to_iter_;
     };
-}
+} // namespace kv_timer
 
 #endif // __TIMER_H

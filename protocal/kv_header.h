@@ -17,7 +17,10 @@ namespace kv_protocal
         "DEL",
         "MOD",
         "EXIST",
+        "REPR",
+        "RESP",
         "END",
+        "INVALID",
     };
 
     enum CommandIdx
@@ -28,6 +31,8 @@ namespace kv_protocal
         KVS_DEL,
         KVS_MOD,
         KVS_EXIST,
+        KVS_REPR,
+        KVS_RESP,
         KVS_END,
         KVS_INVALID,
     };
@@ -45,20 +50,16 @@ namespace kv_protocal
         long tv_nsec{-1};
     };
 
-    struct RequestInfo
+    struct HeaderInfo
     {
-        uint32_t command;
-        uint32_t body_length;
-        uint32_t key_length;
+        uint32_t command{0};
+        uint32_t key_length{0};
+        uint32_t body_length{0};
+        int sync_idx{-1};
         struct TimeoutSpec timeout;
     };
 
-    constexpr inline const size_t HEADER_SIZE = sizeof(struct RequestInfo);
-
-    struct KvResponseHeader
-    {
-        uint32_t response_length;
-    };
-}
+    constexpr inline const size_t HEADER_SIZE = sizeof(struct HeaderInfo);
+} // namespace kv_protocal
 
 #endif // __KV_HEADER_H

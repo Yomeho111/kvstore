@@ -4,7 +4,7 @@
 #include <fstream>
 #include <filesystem>
 #include <string>
-#include "engine_interface.h"
+#include "engine_interface_base.h"
 #include "allocator.h"
 
 using string = std::basic_string<
@@ -28,7 +28,7 @@ namespace kv_persistent
 
         int dump_record(CommandType command, const string &key, const string &value);
 
-        int load_record(kv_engine::EngineInterface *engine);
+        int load_record(kv_engine::EngineInterfaceBase *engine);
 
     private:
         StoreEngine(const StoreEngine &) = delete;
@@ -43,12 +43,12 @@ namespace kv_persistent
 
         int _switch_new_file();
 
-        int _load_record(kv_engine::EngineInterface *engine, const fs::path &file_path);
+        int _load_record(kv_engine::EngineInterfaceBase *engine, const fs::path &file_path);
 
         int file_idx_ = 0;
         size_t file_size = 0;
         std::fstream file_;
     };
-}
+} // namespace kv_persistent
 
 #endif // __KV_PERSISTENT_H

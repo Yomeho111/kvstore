@@ -44,6 +44,6 @@ namespace memory
         std::vector<RawPage> reg_;
     };
 
-}
+} // namespace memory
 
 #endif // __PAGE_ALLOCATOR_H

@@ -125,7 +125,7 @@ namespace kv_persistent
         return 0;
     }
 
-    int StoreEngine::load_record(kv_engine::EngineInterface *engine)
+    int StoreEngine::load_record(kv_engine::EngineInterfaceBase *engine)
     {
         if (engine == nullptr)
             return -1;
@@ -174,7 +174,7 @@ namespace kv_persistent
         return 0;
     }
 
-    int StoreEngine::_load_record(kv_engine::EngineInterface *engine, const fs::path &file_path)
+    int StoreEngine::_load_record(kv_engine::EngineInterfaceBase *engine, const fs::path &file_path)
     {
         if (engine == nullptr)
             return -1;
@@ -385,4 +385,4 @@ namespace kv_persistent
         return 0;
     }
 
-}
+} // namespace kv_persistent

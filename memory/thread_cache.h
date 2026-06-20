@@ -31,6 +31,6 @@ namespace memory
         char *free_lst_[FREE_LIST_SIZE] = {0}; // first 8 bytes next ptr, second 8 bytes prev ptr
         size_t count_lst_[FREE_LIST_SIZE] = {0};
     };
-}
+} // namespace memory
 
 #endif // __THREAD_CACHE_H

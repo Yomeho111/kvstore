@@ -225,7 +225,7 @@ namespace kv_client
         return 0;
     }
 
-    static void free_request_buffers(kv_protocal::RequestInfo *req_info, struct iovec *iov)
+    static void free_request_buffers(kv_protocal::HeaderInfo *req_info, struct iovec *iov)
     {
         if (req_info != nullptr)
             allocator::kv_free(req_info);
@@ -321,8 +321,8 @@ namespace kv_client
         response->responses = nullptr;
 
         kv_protocal::NumHeader num_header{num_request};
-        kv_protocal::RequestInfo *req_info = static_cast<kv_protocal::RequestInfo *>(
-            allocator::kv_malloc(num_request * sizeof(kv_protocal::RequestInfo)));
+        kv_protocal::HeaderInfo *req_info = static_cast<kv_protocal::HeaderInfo *>(
+            allocator::kv_malloc(num_request * sizeof(kv_protocal::HeaderInfo)));
         if (req_info == nullptr)
             return -1;
 
@@ -330,6 +330,12 @@ namespace kv_client
         for (uint32_t i = 0; i < num_request; i++)
         {
             req_info[i].command = command_to_idx(requests[i].command);
+            if (req_info[i].command == kv_protocal::KVS_INVALID)
+            {
+                fprintf(stderr, "Invalid command: %s\r\n", requests[i].command.c_str());
+                free_request_buffers(req_info, nullptr);
+                return -1;
+            }
             req_info[i].key_length = static_cast<uint32_t>(requests[i].key.size());
             req_info[i].body_length = static_cast<uint32_t>(requests[i].key.size() + requests[i].value.size());
             req_info[i].timeout = requests[i].timeout;
@@ -372,14 +378,14 @@ namespace kv_client
         if (response_num_header.num_request == 0)
             return -1;
 
-        kv_protocal::KvResponseHeader *response_headers = static_cast<kv_protocal::KvResponseHeader *>(
-            allocator::kv_malloc(response_num_header.num_request * sizeof(kv_protocal::KvResponseHeader)));
+        kv_protocal::HeaderInfo *response_headers = static_cast<kv_protocal::HeaderInfo *>(
+            allocator::kv_malloc(response_num_header.num_request * sizeof(kv_protocal::HeaderInfo)));
         if (response_headers == nullptr)
             return -1;
 
         if (recv_all(_fd,
                      reinterpret_cast<char *>(response_headers),
-                     response_num_header.num_request * sizeof(kv_protocal::KvResponseHeader)) != 0)
+                     response_num_header.num_request * sizeof(kv_protocal::HeaderInfo)) != 0)
         {
             perror("Error recv response header");
             allocator::kv_free(response_headers);
@@ -398,7 +404,7 @@ namespace kv_client
 
         for (uint32_t i = 0; i < response->num_response; i++)
         {
-            uint32_t response_length = response_headers[i].response_length;
+            uint32_t response_length = response_headers[i].body_length;
             response->responses[i].data = static_cast<char *>(allocator::kv_malloc(response_length + 1));
             if (response->responses[i].data == nullptr)
             {
@@ -443,4 +449,4 @@ namespace kv_client
         response->responses = nullptr;
     }
 
-}
+} // namespace kv_client

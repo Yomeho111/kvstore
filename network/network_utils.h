@@ -28,6 +28,6 @@ namespace network
     int alloc_single_iovec(struct ::iovec **iov, size_t len);
 
     void free_single_iovec(struct ::iovec **iov);
-}
+} // namespace network
 
 #endif // __NETWORK_UTILS_H

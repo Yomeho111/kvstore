@@ -43,8 +43,10 @@ namespace base_component
         K key;
         V value;
         using type = K;
-        TreeNode(const K &k, const V &v) : key(k), value(v) {}
-        TreeNode(K &&k, V &&v) : key(std::move(k)), value(std::move(v)) {}
+        TreeNode(const K &k, const V &v)
+            : key(k), value(v) {}
+        TreeNode(K &&k, V &&v)
+            : key(std::move(k)), value(std::move(v)) {}
         TreeNode() {}
     };
 
@@ -70,10 +72,10 @@ namespace base_component
             nil = nullptr;
         }
 
-        void insert(NodeType *node)
+        int insert(NodeType *node)
         {
             if (node == nullptr)
-                return;
+                return -1;
             NodeType *prev = nil;
             NodeType *cur = root;
             while (cur != nil)
@@ -99,15 +101,23 @@ namespace base_component
             node->right = nil;
             node->color = 'r';
             _insertFixed(node);
+            count++;
+            return 0;
         }
 
-        void insert(const K &k, const V &v)
+        int insert(const K &k, const V &v)
         {
             void *ptr = memory::Slab<NodeType>::instance().malloc();
             if (ptr == nullptr)
-                return;
+                return -1;
             NodeType *node = new (ptr) NodeType(k, v);
-            insert(node);
+            if (insert(node) < 0)
+            {
+                node->~NodeType();
+                memory::Slab<NodeType>::instance().free(node);
+                return -1;
+            }
+            return 0;
         }
 
         void delNode(NodeType *node)
@@ -159,6 +169,7 @@ namespace base_component
             node = nullptr;
             if (real_delete_color == 'b')
                 _deleteFixed(placement);
+            count--;
         }
 
         int delNode(const K &k)
@@ -291,6 +302,7 @@ namespace base_component
         struct iterator
         {
             NodeType *node;
+            RBTree *tree;
 
             NodeType *operator*() const
             {
@@ -299,7 +311,7 @@ namespace base_component
 
             iterator &operator++()
             {
-                node = get_successor(node);
+                node = tree->get_successor(node);
                 return *this;
             }
 
@@ -311,12 +323,17 @@ namespace base_component
 
         iterator begin()
         {
-            return iterator{get_minimum(root)};
+            return iterator{get_minimum(root), this};
         }
 
         iterator end()
         {
-            return iterator{nullptr};
+            return iterator{nullptr, this};
+        }
+
+        int size() const
+        {
+            return count;
         }
 
     private:
@@ -564,7 +581,8 @@ namespace base_component
         NodeType *root;
         NodeType nil_value;
         NodeType *nil;
+        int count{0};
     };
 
-}
+} // namespace base_component
 #endif // RBTREE_HPP
