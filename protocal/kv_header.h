@@ -19,6 +19,9 @@ namespace kv_protocal
         "EXIST",
         "REPR",
         "RESP",
+        "MULTI",
+        "EXEC",
+        "EXIT",
         "END",
         "INVALID",
     };
@@ -33,6 +36,9 @@ namespace kv_protocal
         KVS_EXIST,
         KVS_REPR,
         KVS_RESP,
+        KVS_MULTI,
+        KVS_EXEC,
+        KVS_EXIT,
         KVS_END,
         KVS_INVALID,
     };

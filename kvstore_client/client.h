@@ -43,6 +43,15 @@ namespace kv_client
             : command(cmd), key(k), value(v), timeout(t) {}
         KvRequest(const char *cmd, const char *k, const char *v, const kv_protocal::TimeoutSpec &t = {})
             : command(cmd), key(k), value(v), timeout(t) {}
+
+        KvRequest(const KvRequest &other);
+        KvRequest(KvRequest &&other) noexcept;
+
+        KvRequest &operator=(const KvRequest &other);
+
+        KvRequest &operator=(KvRequest &&other) noexcept;
+
+        ~KvRequest() = default;
     };
 
     struct KvResponse
@@ -83,6 +92,8 @@ namespace kv_client
         uint16_t _port;
         int _fd;
     };
+
+    int parse_request_line(const string &line, KvRequest *request);
 } // namespace kv_client
 
 #endif // __CLIENT_H
