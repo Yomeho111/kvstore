@@ -8,6 +8,39 @@
 namespace kv_client
 {
 
+    KvRequest::KvRequest(const KvRequest &other)
+        : command(other.command), key(other.key), value(other.value), timeout(other.timeout) {}
+
+    KvRequest::KvRequest(KvRequest &&other) noexcept
+        : command(std::move(other.command)),
+          key(std::move(other.key)),
+          value(std::move(other.value)),
+          timeout(other.timeout) {}
+
+    KvRequest &KvRequest::operator=(const KvRequest &other)
+    {
+        if (this != &other)
+        {
+            command = other.command;
+            key = other.key;
+            value = other.value;
+            timeout = other.timeout;
+        }
+        return *this;
+    }
+
+    KvRequest &KvRequest::operator=(KvRequest &&other) noexcept
+    {
+        if (this != &other)
+        {
+            command = std::move(other.command);
+            key = std::move(other.key);
+            value = std::move(other.value);
+            timeout = other.timeout;
+        }
+        return *this;
+    }
+
     static uint32_t command_to_idx(const string &cmd)
     {
         for (uint32_t i = kv_protocal::KVS_START + 1; i < kv_protocal::KVS_END; i++)
@@ -150,7 +183,7 @@ namespace kv_client
         return 0;
     }
 
-    static int parse_request_line(const string &line, KvRequest *request)
+    int parse_request_line(const string &line, KvRequest *request)
     {
         if (request == nullptr)
             return -1;
