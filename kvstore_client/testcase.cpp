@@ -5,8 +5,11 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <string>
+#include <vector>
 
 #include "allocator.h"
+
+#define N 500000
 
 #define TIME_SUB_MS(tv1, tv2) ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
 
@@ -172,6 +175,104 @@ void testcase_timeout(kv_client::KvClient &client)
     batch_testcase(client, expired_requests, expired_patterns, sizeof(expired_requests) / sizeof(expired_requests[0]), "batch-timeout-after-expire");
 }
 
+void testcase_set(kv_client::KvClient &client)
+{
+    constexpr int BATCH_SIZE = 128;
+
+    const char *value =
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+
+    for (int begin = 1; begin <= N; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE - 1, N);
+        int batch_count = end - begin + 1;
+
+        std::vector<std::string> keys;
+        std::vector<kv_client::KvRequest> requests;
+        std::vector<const char *> patterns;
+
+        keys.reserve(batch_count);
+        requests.reserve(batch_count);
+        patterns.reserve(batch_count);
+
+        for (int i = begin; i <= end; ++i)
+        {
+            keys.emplace_back("key" + std::to_string(i));
+
+            requests.push_back({"SET",
+                                keys.back().c_str(),
+                                value});
+
+            patterns.push_back("OK\r\n");
+        }
+
+        std::string testcase_name =
+            "batch-set-10000-" + std::to_string(begin) + "-" + std::to_string(end);
+
+        batch_testcase(
+            client,
+            requests.data(),
+            patterns.data(),
+            requests.size(),
+            testcase_name.c_str());
+    }
+}
+
+void testcase_del(kv_client::KvClient &client)
+{
+    constexpr int BATCH_SIZE = 128;
+
+    for (int begin = 1; begin <= N; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE - 1, N);
+        int batch_count = end - begin + 1;
+
+        std::vector<std::string> keys;
+        std::vector<kv_client::KvRequest> requests;
+        std::vector<const char *> patterns;
+
+        keys.reserve(batch_count);
+        requests.reserve(batch_count);
+        patterns.reserve(batch_count);
+
+        for (int i = begin; i <= end; ++i)
+        {
+            keys.emplace_back("key" + std::to_string(i));
+
+            requests.push_back({"DEL",
+                                keys.back().c_str(),
+                                ""});
+
+            patterns.push_back("OK\r\n");
+        }
+
+        std::string testcase_name =
+            "batch-del-10000-" + std::to_string(begin) + "-" + std::to_string(end);
+
+        batch_testcase(
+            client,
+            requests.data(),
+            patterns.data(),
+            requests.size(),
+            testcase_name.c_str());
+    }
+}
+
 void array_testcase_1w(kv_client::KvClient &client, void (*func)(kv_client::KvClient &))
 {
 
@@ -221,6 +322,10 @@ int main(int argc, char **argv)
         array_testcase_1w(client_ins, testcase2);
     else if (mode == 4)
         testcase_timeout(client_ins);
+    else if (mode == 5)
+        testcase_set(client_ins);
+    else if (mode == 6)
+        testcase_del(client_ins);
     else
     {
         perror("Invalid testcase number");
