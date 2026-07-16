@@ -19,6 +19,7 @@ out/
 # data store binary
 *.dt
 data/
+rdb_data/
 
 # common binary names
 main

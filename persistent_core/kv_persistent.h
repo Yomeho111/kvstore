@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <string>
+#include <sys/uio.h>
 #include <liburing.h>
 #include "engine_interface_base.h"
 #include "allocator.h"
@@ -15,6 +16,17 @@ using string = std::basic_string<
 namespace kv_persistent
 {
     namespace fs = std::filesystem;
+
+    // Which persistence strategy the server uses. Selected once at startup.
+    enum class PersistMode
+    {
+        AOF,
+        RDB,
+    };
+
+    // Global persistence mode, defaults to AOF (append-only log). Set from main().
+    inline PersistMode g_persist_mode = PersistMode::AOF;
+
     class StoreEngine
     {
         using CommandType = uint16_t;
@@ -54,6 +66,70 @@ namespace kv_persistent
         int fd_ = -1;
         struct io_uring ring_;
         bool ring_ready_ = false;
+    };
+
+    // RDB snapshot store.
+    //
+    // Unlike the append-only StoreEngine, this does not log every write. save()
+    // takes a point-in-time snapshot of the whole dataset into a single file
+    // (rdb_data/kv_0.rdt), reusing the same record layout + crc32 as the AOF log.
+    // Writing goes through io_uring; loading uses mmap. The write side is split into
+    // a parent part (prepare/commit/discard) and a child part (child_*) because the
+    // snapshot is produced by a forked child, so the server keeps serving against a
+    // copy-on-write memory image. The child path avoids the custom allocator to stay
+    // fork-safe.
+    class SnapshotEngine
+    {
+        using CommandType = uint16_t;
+
+        // io_uring pipeline depth: up to this many record writes are kept in flight.
+        static constexpr unsigned RDB_DEPTH = 64;
+        // fixed record header size: [MAGIC][CRC32][COMMAND][KEY_LEN]
+        static constexpr size_t RDB_HDR_LEN =
+            sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint16_t) + sizeof(size_t);
+
+        // per-in-flight scratch: one writev (header + key + val_len + value) plus the
+        // small fixed buffers it points at. Sized to RDB_DEPTH so a slot is reused only
+        // after its write has completed.
+        struct WriteSlot
+        {
+            struct iovec iov[4];
+            char header[RDB_HDR_LEN];
+            char vlen[sizeof(size_t)];
+        };
+
+    public:
+        SnapshotEngine() = default;
+        ~SnapshotEngine();
+
+        // parent side (around fork)
+        int prepare();  // create folder + open the temp snapshot file
+        int commit();   // atomically rename temp -> final, close
+        void discard(); // drop the temp file, close
+
+        // child side (after fork)
+        int child_begin();                                       // init io_uring on the inherited fd
+        int child_write(const string &key, const string &value); // queue one record (writev, pipelined)
+        int child_finish();                                      // drain in-flight writes + fdatasync
+
+        // load (parent, at startup)
+        int load(kv_engine::EngineInterfaceBase *engine);
+
+    private:
+        SnapshotEngine(const SnapshotEngine &) = delete;
+        SnapshotEngine(SnapshotEngine &&) = delete;
+        SnapshotEngine &operator=(const SnapshotEngine &) = delete;
+        SnapshotEngine &operator=(SnapshotEngine &&) = delete;
+
+        int _reap_one(); // wait for one write completion and validate it
+
+        int fd_ = -1;
+        size_t write_off_ = 0;
+        struct io_uring ring_;
+        bool ring_ready_ = false;
+        unsigned inflight_ = 0;
+        unsigned seq_ = 0;
+        WriteSlot slots_[RDB_DEPTH];
     };
 } // namespace kv_persistent
 

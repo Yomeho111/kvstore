@@ -43,6 +43,12 @@ namespace kv_protocal
             return prot;
         }
 
+        // Trigger an RDB snapshot of the whole dataset (used by the SIGUSR1 handler).
+        int save()
+        {
+            return _engine.save();
+        }
+
         int process_num_request(struct network::StatusM *status, uint32_t num_request)
         {
             if (status == nullptr || num_request == 0)
