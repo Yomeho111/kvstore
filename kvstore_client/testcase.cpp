@@ -273,6 +273,106 @@ void testcase_del(kv_client::KvClient &client)
     }
 }
 
+constexpr int UNIQUE_KV_COUNT = 100000;
+
+static std::string make_unique_key(int i)
+{
+    return "ukey" + std::to_string(i);
+}
+
+static std::string make_unique_value(int i)
+{
+    return "uval" + std::to_string(i);
+}
+
+// SET UNIQUE_KV_COUNT key/value pairs, each with a distinct key and a distinct value.
+void testcase_set_unique(kv_client::KvClient &client)
+{
+    constexpr int BATCH_SIZE = 128;
+
+    for (int begin = 1; begin <= UNIQUE_KV_COUNT; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE - 1, UNIQUE_KV_COUNT);
+        int batch_count = end - begin + 1;
+
+        std::vector<std::string> keys;
+        std::vector<std::string> values;
+        std::vector<kv_client::KvRequest> requests;
+        std::vector<const char *> patterns;
+
+        keys.reserve(batch_count);
+        values.reserve(batch_count);
+        requests.reserve(batch_count);
+        patterns.reserve(batch_count);
+
+        for (int i = begin; i <= end; ++i)
+        {
+            keys.emplace_back(make_unique_key(i));
+            values.emplace_back(make_unique_value(i));
+
+            requests.push_back({"SET",
+                                keys.back().c_str(),
+                                values.back().c_str()});
+
+            patterns.push_back("OK\r\n");
+        }
+
+        std::string testcase_name =
+            "batch-set-unique-" + std::to_string(begin) + "-" + std::to_string(end);
+
+        batch_testcase(
+            client,
+            requests.data(),
+            patterns.data(),
+            requests.size(),
+            testcase_name.c_str());
+    }
+}
+
+// GET the UNIQUE_KV_COUNT pairs written by testcase_set_unique and verify each value.
+void testcase_get_unique(kv_client::KvClient &client)
+{
+    constexpr int BATCH_SIZE = 128;
+
+    for (int begin = 1; begin <= UNIQUE_KV_COUNT; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE - 1, UNIQUE_KV_COUNT);
+        int batch_count = end - begin + 1;
+
+        std::vector<std::string> keys;
+        std::vector<std::string> expected;
+        std::vector<kv_client::KvRequest> requests;
+        std::vector<const char *> patterns;
+
+        keys.reserve(batch_count);
+        expected.reserve(batch_count);
+        requests.reserve(batch_count);
+        patterns.reserve(batch_count);
+
+        for (int i = begin; i <= end; ++i)
+        {
+            keys.emplace_back(make_unique_key(i));
+            expected.emplace_back(make_unique_value(i) + "\r\n");
+
+            requests.push_back({"GET",
+                                keys.back().c_str(),
+                                ""});
+
+            patterns.push_back(expected.back().c_str());
+        }
+
+        std::string testcase_name =
+            "batch-get-unique-" + std::to_string(begin) + "-" + std::to_string(end);
+
+        batch_testcase(
+            client,
+            requests.data(),
+            patterns.data(),
+            requests.size(),
+            testcase_name.c_str());
+    }
+}
+
 void array_testcase_1w(kv_client::KvClient &client, void (*func)(kv_client::KvClient &))
 {
 
@@ -326,6 +426,10 @@ int main(int argc, char **argv)
         testcase_set(client_ins);
     else if (mode == 6)
         testcase_del(client_ins);
+    else if (mode == 7)
+        testcase_set_unique(client_ins);
+    else if (mode == 8)
+        testcase_get_unique(client_ins);
     else
     {
         perror("Invalid testcase number");

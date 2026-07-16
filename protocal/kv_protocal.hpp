@@ -37,8 +37,8 @@ namespace kv_protocal
             static int ret = prot._engine.init();
             if (ret < 0)
             {
-                fprintf(stderr, "kv_protocal init failure: %d\n", ret);
-                exit(-1);
+                fprintf(stderr, "corrupted database\n");
+                exit(0);
             }
             return prot;
         }

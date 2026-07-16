@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "kv_header.h"
+#include "crc32.h"
 
 namespace kv_persistent
 {
@@ -60,7 +61,8 @@ namespace kv_persistent
                 return -3;
         }
 
-        size_t buffer_size = sizeof(MAGIC) + sizeof(command) + sizeof(key_len) + key_len + sizeof(val_len) + val_len;
+        uint32_t crc = 0;
+        size_t buffer_size = sizeof(MAGIC) + sizeof(crc) + sizeof(command) + sizeof(key_len) + key_len + sizeof(val_len) + val_len;
 
         char *buffer = (char *)allocator::kv_malloc(buffer_size);
         if (!buffer)
@@ -71,6 +73,13 @@ namespace kv_persistent
         // write magic
         memcpy(cur, &MAGIC, sizeof(MAGIC));
         cur += sizeof(MAGIC);
+
+        // reserve space for the crc32; it is filled in once the payload is serialized
+        char *crc_slot = cur;
+        cur += sizeof(crc);
+
+        // the crc32 covers everything from here to the end of the record (command .. value)
+        char *payload = cur;
 
         // write command
         memcpy(cur, &command, sizeof(command));
@@ -93,6 +102,10 @@ namespace kv_persistent
         {
             memcpy(cur, value.data(), val_len);
         }
+
+        // compute the crc32 over the payload and store it right after the magic
+        crc = checksum::crc32(payload, buffer_size - sizeof(MAGIC) - sizeof(crc));
+        memcpy(crc_slot, &crc, sizeof(crc));
 
         file_.seekp(0, std::ios::end);
         if (!file_)
@@ -189,7 +202,8 @@ namespace kv_persistent
 
         auto read_exact = [&](void *dst, size_t len) -> int
         {
-            if (offset + len > size)
+            // overflow-safe bound check (offset <= size is maintained as an invariant)
+            if (len > size - offset)
                 return -3;
 
             file.read(static_cast<char *>(dst), static_cast<std::streamsize>(len));
@@ -203,6 +217,8 @@ namespace kv_persistent
         while (offset < size)
         {
             uint32_t magic = 0;
+            uint32_t stored_crc = 0;
+            uint32_t computed_crc = checksum::CRC32_INIT;
             CommandType command = 0;
             size_t key_len = 0;
             size_t val_len = 0;
@@ -213,13 +229,21 @@ namespace kv_persistent
             if (magic != MAGIC)
                 return -4;
 
+            // the crc32 is stored right after the magic and covers command .. value
+            if (read_exact(&stored_crc, sizeof(stored_crc)) < 0)
+                return -3;
+
             if (read_exact(&command, sizeof(command)) < 0)
                 return -3;
+            computed_crc = checksum::crc32_update(computed_crc, &command, sizeof(command));
 
             if (read_exact(&key_len, sizeof(key_len)) < 0)
                 return -3;
+            computed_crc = checksum::crc32_update(computed_crc, &key_len, sizeof(key_len));
 
-            if (key_len == 0)
+            // a valid key must be non-empty and fit within the bytes left in the file;
+            // reject bogus lengths here so a corrupt record cannot trigger a huge allocation
+            if (key_len == 0 || key_len > size - offset)
                 return -4;
 
             char *key = static_cast<char *>(allocator::kv_malloc(key_len));
@@ -231,11 +255,20 @@ namespace kv_persistent
                 allocator::kv_free(key);
                 return -3;
             }
+            computed_crc = checksum::crc32_update(computed_crc, key, key_len);
 
             if (read_exact(&val_len, sizeof(val_len)) < 0)
             {
                 allocator::kv_free(key);
                 return -3;
+            }
+            computed_crc = checksum::crc32_update(computed_crc, &val_len, sizeof(val_len));
+
+            // the value must also fit within the remaining bytes of the file
+            if (val_len > size - offset)
+            {
+                allocator::kv_free(key);
+                return -4;
             }
 
             char *value = nullptr;
@@ -254,6 +287,16 @@ namespace kv_persistent
                     allocator::kv_free(key);
                     return -3;
                 }
+                computed_crc = checksum::crc32_update(computed_crc, value, val_len);
+            }
+
+            // the recomputed crc32 must match the stored one, otherwise the record is corrupt
+            if (checksum::crc32_final(computed_crc) != stored_crc)
+            {
+                if (value != nullptr)
+                    allocator::kv_free(value);
+                allocator::kv_free(key);
+                return -7;
             }
 
             int ret = 0;
