@@ -98,6 +98,12 @@ if(ENABLE_MEMORY_POOL)
     target_compile_definitions(kvstore_core PUBLIC ENABLE_MEMORY_POOL)
 endif()
 
+# The persistence layer uses io_uring for durable writes, so kvstore_core always needs liburing.
+find_path(LIBURING_INCLUDE_DIR liburing.h REQUIRED)
+find_library(LIBURING_LIBRARY uring REQUIRED)
+target_include_directories(kvstore_core PUBLIC ${LIBURING_INCLUDE_DIR})
+target_link_libraries(kvstore_core PUBLIC ${LIBURING_LIBRARY})
+
 add_library(kvstore_backend STATIC)
 
 target_link_libraries(kvstore_backend

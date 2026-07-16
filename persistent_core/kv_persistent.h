@@ -1,9 +1,9 @@
 #ifndef __KV_PERSISTENT_H
 #define __KV_PERSISTENT_H
 
-#include <fstream>
 #include <filesystem>
 #include <string>
+#include <liburing.h>
 #include "engine_interface_base.h"
 #include "allocator.h"
 
@@ -24,6 +24,8 @@ namespace kv_persistent
         ~StoreEngine()
         {
             _close_file();
+            if (ring_ready_)
+                io_uring_queue_exit(&ring_);
         }
 
         int dump_record(CommandType command, const string &key, const string &value);
@@ -45,9 +47,13 @@ namespace kv_persistent
 
         int _load_record(kv_engine::EngineInterfaceBase *engine, const fs::path &file_path);
 
+        int _append(const char *buf, size_t len);
+
         int file_idx_ = 0;
         size_t file_size = 0;
-        std::fstream file_;
+        int fd_ = -1;
+        struct io_uring ring_;
+        bool ring_ready_ = false;
     };
 } // namespace kv_persistent
 
