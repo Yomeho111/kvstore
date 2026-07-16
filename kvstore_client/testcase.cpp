@@ -373,6 +373,139 @@ void testcase_get_unique(kv_client::KvClient &client)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Multi-step timer / expiration test.
+//
+//   t0        : SET TIMER_STEP_KV unique KV, each with a 1s expiration.
+//   T1 .. T5  : 1.5s after the previous step, GET the previous step's batch
+//               (every key must have expired -> "NOT EXIST") and then SET a
+//               fresh batch of TIMER_STEP_KV unique KV, again with a 1s TTL.
+//
+// The 1.5s spacing is deliberately larger than the 1s TTL, so each batch is
+// guaranteed to be gone by the time it is read back one step later. This keeps
+// the server-side timer under a sustained set/expire workload.
+// ---------------------------------------------------------------------------
+constexpr int TIMER_STEP_KV = 10000;                // unique KV per step
+constexpr int TIMER_STEPS = 5;                      // T1 .. T5
+constexpr int TIMER_STEP_INTERVAL_US = 1500 * 1000; // 1.5s between steps
+
+static std::string make_timer_key(int step, int i)
+{
+    return "tmkey_" + std::to_string(step) + "_" + std::to_string(i);
+}
+
+static std::string make_timer_value(int step, int i)
+{
+    return "tmval_" + std::to_string(step) + "_" + std::to_string(i);
+}
+
+// SET the whole batch for `step`, each key carrying a 1s expiration.
+static void timer_set_batch(kv_client::KvClient &client, int step)
+{
+    constexpr int BATCH_SIZE = 128;
+    const kv_protocal::TimeoutSpec ttl{1, 0}; // 1 second
+
+    for (int begin = 0; begin < TIMER_STEP_KV; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE, TIMER_STEP_KV);
+        int batch_count = end - begin;
+
+        std::vector<std::string> keys;
+        std::vector<std::string> values;
+        std::vector<kv_client::KvRequest> requests;
+        std::vector<const char *> patterns;
+
+        keys.reserve(batch_count);
+        values.reserve(batch_count);
+        requests.reserve(batch_count);
+        patterns.reserve(batch_count);
+
+        for (int i = begin; i < end; ++i)
+        {
+            keys.emplace_back(make_timer_key(step, i));
+            values.emplace_back(make_timer_value(step, i));
+
+            requests.push_back({"SET",
+                                keys.back().c_str(),
+                                values.back().c_str(),
+                                ttl});
+            patterns.push_back("OK\r\n");
+        }
+
+        std::string testcase_name =
+            "timer-set-step" + std::to_string(step) + "-" + std::to_string(begin);
+
+        batch_testcase(
+            client,
+            requests.data(),
+            patterns.data(),
+            requests.size(),
+            testcase_name.c_str());
+    }
+}
+
+// GET the whole batch for `step` and assert every key has expired.
+static void timer_verify_expired(kv_client::KvClient &client, int step)
+{
+    constexpr int BATCH_SIZE = 128;
+
+    for (int begin = 0; begin < TIMER_STEP_KV; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE, TIMER_STEP_KV);
+        int batch_count = end - begin;
+
+        std::vector<std::string> keys;
+        std::vector<kv_client::KvRequest> requests;
+        std::vector<const char *> patterns;
+
+        keys.reserve(batch_count);
+        requests.reserve(batch_count);
+        patterns.reserve(batch_count);
+
+        for (int i = begin; i < end; ++i)
+        {
+            keys.emplace_back(make_timer_key(step, i));
+
+            requests.push_back({"GET",
+                                keys.back().c_str(),
+                                ""});
+            patterns.push_back("NOT EXIST\r\n");
+        }
+
+        std::string testcase_name =
+            "timer-expired-step" + std::to_string(step) + "-" + std::to_string(begin);
+
+        batch_testcase(
+            client,
+            requests.data(),
+            patterns.data(),
+            requests.size(),
+            testcase_name.c_str());
+    }
+}
+
+void testcase_timer_multi_step(kv_client::KvClient &client)
+{
+    // t0: seed the first batch.
+    timer_set_batch(client, 0);
+    printf("timer-multi-step: t0 SET %d KV (1s TTL)\n", TIMER_STEP_KV);
+
+    // T1 .. T5: wait past the TTL, confirm the previous batch expired, seed the next.
+    for (int step = 1; step <= TIMER_STEPS; ++step)
+    {
+        usleep(TIMER_STEP_INTERVAL_US);
+
+        timer_verify_expired(client, step - 1);
+        timer_set_batch(client, step);
+
+        printf("timer-multi-step: T%d verified step %d expired + SET %d new KV\n",
+               step, step - 1, TIMER_STEP_KV);
+    }
+
+    printf("==> PASSED -> timer-multi-step (%d steps, %d KV/step, 1s TTL, 1.5s spacing)\n",
+           TIMER_STEPS, TIMER_STEP_KV);
+}
+
 void array_testcase_1w(kv_client::KvClient &client, void (*func)(kv_client::KvClient &))
 {
 
@@ -430,6 +563,8 @@ int main(int argc, char **argv)
         testcase_set_unique(client_ins);
     else if (mode == 8)
         testcase_get_unique(client_ins);
+    else if (mode == 9)
+        testcase_timer_multi_step(client_ins);
     else
     {
         perror("Invalid testcase number");
