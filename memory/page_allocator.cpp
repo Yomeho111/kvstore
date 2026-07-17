@@ -32,7 +32,6 @@ namespace memory
         if (ptr == MAP_FAILED)
             return nullptr;
 
-        memset(ptr, 0, size);
         reg_.emplace_back(ptr, num_pages);
 
         return (char *)ptr;

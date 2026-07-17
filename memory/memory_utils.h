@@ -15,7 +15,18 @@ namespace memory
     constexpr size_t MAX_BYTES{128 * 1024};
     constexpr size_t PADDING_INDEX{std::countr_zero(ALIGNMENT) + 1};
     constexpr size_t MIN_SIZE{1ul << PADDING_INDEX};
-    constexpr size_t FREE_LIST_SIZE{std::countr_zero(MAX_BYTES) - PADDING_INDEX + 1};
+
+    // Sub-octave size classes (tcmalloc / jemalloc style): every power-of-two
+    // octave [2^k, 2^(k+1)) is split into SUBCLASSES evenly spaced classes. This
+    // bounds internal fragmentation to ~1/SUBCLASSES (12.5% for LG_SUB = 3)
+    // instead of the up-to-100% waste of pure power-of-two classes -- e.g. a 1 KB
+    // value (1041 B with header) used to consume a 2048 B block; it now maps to a
+    // 1152 B block.
+    constexpr size_t LG_SUB{3};
+    constexpr size_t SUBCLASSES{1ul << LG_SUB};
+    constexpr size_t LG_MIN{PADDING_INDEX};
+    constexpr size_t LG_MAX{std::countr_zero(MAX_BYTES)};
+    constexpr size_t FREE_LIST_SIZE{1 + (LG_MAX - LG_MIN) * SUBCLASSES};
 
     constexpr size_t THRESHHOLD_BYTES{4096};
     constexpr size_t SMALL_BATCH_SIZE{20};
@@ -57,27 +68,39 @@ namespace memory
     class SizeClass
     {
     public:
+        // floor(log2(v)) for v >= 1.
+        static size_t floor_log2(size_t v)
+        {
+            return (sizeof(size_t) * 8 - 1) - std::countl_zero(v);
+        }
+
         static size_t round_up(size_t bytes)
         {
-            if (bytes < MIN_SIZE)
+            if (bytes <= MIN_SIZE)
                 return MIN_SIZE;
-            bytes--;
-            for (int shift = 1; shift < sizeof(size_t) * 8; shift <<= 1)
-            {
-                bytes |= (bytes >> shift);
-            }
-            return bytes + 1;
+            size_t lg = floor_log2(bytes - 1);
+            size_t delta = size_t(1) << (lg - LG_SUB);
+            return (bytes + delta - 1) & ~(delta - 1);
         }
 
         static size_t get_index(size_t bytes)
         {
-            bytes = round_up(bytes);
-            return std::countr_zero(bytes) - PADDING_INDEX;
+            if (bytes <= MIN_SIZE)
+                return 0;
+            size_t lg = floor_log2(bytes - 1);
+            size_t j = (bytes - 1 - (size_t(1) << lg)) >> (lg - LG_SUB);
+            return 1 + (lg - LG_MIN) * SUBCLASSES + j;
         }
 
         static size_t get_size(size_t index)
         {
-            return 1ul << (index + PADDING_INDEX);
+            if (index == 0)
+                return MIN_SIZE;
+            size_t k = index - 1;
+            size_t lg = LG_MIN + k / SUBCLASSES;
+            size_t j = k % SUBCLASSES;
+            size_t delta = size_t(1) << (lg - LG_SUB);
+            return (size_t(1) << lg) + (j + 1) * delta;
         }
     };
 } // namespace memory
