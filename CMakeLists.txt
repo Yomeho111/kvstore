@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(kvstore LANGUAGES CXX)
+project(kvstore LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -71,6 +71,13 @@ add_library(kvstore_core STATIC
     persistent_core/kv_persistent.cpp
     timer/timer.cpp
     replication/rep_manager.cpp
+    third_party/hiredis/alloc.c
+    third_party/hiredis/async.c
+    third_party/hiredis/hiredis.c
+    third_party/hiredis/net.c
+    third_party/hiredis/read.c
+    third_party/hiredis/sds.c
+    third_party/hiredis/sockcompat.c
 )
 
 target_include_directories(kvstore_core
@@ -86,6 +93,7 @@ target_include_directories(kvstore_core
         ${PROJECT_SOURCE_DIR}/base_component/skiplist
         ${PROJECT_SOURCE_DIR}/timer
         ${PROJECT_SOURCE_DIR}/replication
+        ${PROJECT_SOURCE_DIR}/third_party/hiredis
 )
 
 target_compile_definitions(kvstore_core

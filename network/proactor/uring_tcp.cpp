@@ -1,11 +1,16 @@
 #include "uring_tcp.h"
 
 #include <errno.h>
+#include <string>
 
 #include "allocator.h"
 #include "kv_protocal.hpp"
 #include "network_utils.h"
 #include "timer.h"
+#include "hiredis.h"
+
+#define RESP_RECV_BUF_SIZE 16384
+#define RESP_MAX_ARGS 64
 
 namespace proactor
 {
@@ -163,6 +168,26 @@ namespace proactor
         _pool[fd].io_bytes_total = 0;
         _pool[fd].heartbeat_pending = false;
         _pool[fd].expect_reply = false;
+
+        if (_pool[fd].resp_reader)
+        {
+            redisReaderFree(static_cast<redisReader *>(_pool[fd].resp_reader));
+            _pool[fd].resp_reader = nullptr;
+        }
+        if (_pool[fd].resp_buf)
+        {
+            allocator::kv_free(_pool[fd].resp_buf);
+            _pool[fd].resp_buf = nullptr;
+        }
+        if (_pool[fd].resp_out)
+        {
+            allocator::kv_free(_pool[fd].resp_out);
+            _pool[fd].resp_out = nullptr;
+        }
+        _pool[fd].resp_out_len = 0;
+        _pool[fd].resp_out_done = 0;
+        _pool[fd].resp_close_after = false;
+        _pool[fd].proto = PROTO_UNKNOWN;
         _pool[fd].is_used = false;
     }
 
@@ -195,6 +220,13 @@ namespace proactor
         _pool[fd].event = READ_EVENT;
         _pool[fd].heartbeat_pending = false;
         _pool[fd].expect_reply = false;
+        _pool[fd].proto = PROTO_UNKNOWN;
+        _pool[fd].resp_reader = nullptr;
+        _pool[fd].resp_buf = nullptr;
+        _pool[fd].resp_out = nullptr;
+        _pool[fd].resp_out_len = 0;
+        _pool[fd].resp_out_done = 0;
+        _pool[fd].resp_close_after = false;
 
         return 0;
     }
@@ -364,12 +396,21 @@ namespace proactor
         }
 #endif
 
-        if (set_event_recv(clientfd, pool->operator[](clientfd), 0) == -1)
+        Conn *client_conn = pool->operator[](clientfd);
+
+        // Peek the first byte to detect the wire protocol before committing to the
+        // native state machine. RESP commands (redis-cli / hiredis / redis-benchmark)
+        // always begin with '*'. MSG_PEEK does not consume the byte.
+        struct io_uring_sqe *sqe = io_uring_get_sqe(&_ring);
+        if (sqe == nullptr)
         {
-            perror("Error set_event_recv");
+            perror("Error get_sqe for protocol detection");
             pool->clean_up_conn(clientfd);
             return -1;
         }
+        client_conn->event = READ_EVENT;
+        io_uring_prep_recv(sqe, clientfd, &client_conn->peek_byte, 1, MSG_PEEK);
+        memcpy(&sqe->user_data, &client_conn, sizeof(client_conn));
         return 0;
     }
 
@@ -394,6 +435,33 @@ namespace proactor
             ret = -1;
             goto clean;
         }
+
+        if (conn->proto == PROTO_UNKNOWN)
+        {
+            // Completion of the 1-byte detection peek.
+            conn->proto = (conn->peek_byte == '*') ? PROTO_RESP : PROTO_CUSTOM;
+            if (conn->proto == PROTO_RESP)
+            {
+                if (resp_issue_recv(conn) == -1)
+                {
+                    ret = -1;
+                    goto clean;
+                }
+                return 0;
+            }
+            // Native protocol: issue the normal NumHeader recv (the peeked byte is
+            // still queued because MSG_PEEK did not consume it).
+            if (set_event_recv(conn->fd, conn, 0) == -1)
+            {
+                perror("Error set_event_recv");
+                ret = -1;
+                goto clean;
+            }
+            return 0;
+        }
+
+        if (conn->proto == PROTO_RESP)
+            return resp_recv_cb(conn, cqe);
 
         switch (conn->status.status)
         {
@@ -510,6 +578,9 @@ namespace proactor
 
     int TcpServers::send_cb(Conn *conn, struct io_uring_cqe *cqe)
     {
+        if (conn->proto == PROTO_RESP)
+            return resp_send_cb(conn, cqe);
+
         int ret = cqe->res;
 
         if (ret < 0)
@@ -543,6 +614,177 @@ namespace proactor
         if (set_event_recv(conn->fd, conn, 0) == -1)
         {
             perror("Error set_event_recv");
+            ConnPool::get_connpool()->clean_up_conn(conn->fd);
+            return -1;
+        }
+        return 0;
+    }
+
+    int TcpServers::resp_issue_recv(Conn *conn)
+    {
+        if (conn->resp_reader == nullptr)
+        {
+            conn->resp_reader = redisReaderCreate();
+            if (conn->resp_reader == nullptr)
+                return -1;
+        }
+        if (conn->resp_buf == nullptr)
+        {
+            conn->resp_buf = static_cast<char *>(allocator::kv_malloc(RESP_RECV_BUF_SIZE));
+            if (conn->resp_buf == nullptr)
+                return -1;
+        }
+
+        struct io_uring_sqe *sqe = io_uring_get_sqe(&_ring);
+        if (sqe == nullptr)
+            return -1;
+
+        conn->event = READ_EVENT;
+        io_uring_prep_recv(sqe, conn->fd, conn->resp_buf, RESP_RECV_BUF_SIZE, 0);
+        memcpy(&sqe->user_data, &conn, sizeof(conn));
+        return 0;
+    }
+
+    int TcpServers::resp_issue_send(Conn *conn)
+    {
+        struct io_uring_sqe *sqe = io_uring_get_sqe(&_ring);
+        if (sqe == nullptr)
+            return -1;
+
+        conn->event = WRITE_EVENT;
+        io_uring_prep_send(sqe, conn->fd, conn->resp_out + conn->resp_out_done,
+                           conn->resp_out_len - conn->resp_out_done, 0);
+        memcpy(&sqe->user_data, &conn, sizeof(conn));
+        return 0;
+    }
+
+    int TcpServers::resp_recv_cb(Conn *conn, struct io_uring_cqe *cqe)
+    {
+        int count = cqe->res;
+        if (count <= 0)
+        {
+            ConnPool::get_connpool()->clean_up_conn(conn->fd);
+            return 0;
+        }
+
+        redisReader *reader = static_cast<redisReader *>(conn->resp_reader);
+        if (redisReaderFeed(reader, conn->resp_buf, count) != REDIS_OK)
+        {
+            ConnPool::get_connpool()->clean_up_conn(conn->fd);
+            return 0;
+        }
+
+        std::string out;
+        bool close_after = false;
+        void *reply = nullptr;
+
+        // A single read may carry several pipelined commands; drain them all.
+        while (redisReaderGetReply(reader, &reply) == REDIS_OK && reply != nullptr)
+        {
+            redisReply *rr = static_cast<redisReply *>(reply);
+            if (rr->type == REDIS_REPLY_ARRAY && rr->elements > 0)
+            {
+                int argc = static_cast<int>(rr->elements);
+                if (argc > RESP_MAX_ARGS)
+                {
+                    out += "-ERR too many arguments\r\n";
+                }
+                else
+                {
+                    char *argv[RESP_MAX_ARGS];
+                    size_t argvlen[RESP_MAX_ARGS];
+                    for (int i = 0; i < argc; i++)
+                    {
+                        argv[i] = rr->element[i]->str;
+                        argvlen[i] = rr->element[i]->len;
+                    }
+                    if (kv_protocal::KvStoreProtocal::instance().process_resp_command(argc, argv, argvlen, out) == 1)
+                        close_after = true;
+                }
+            }
+            else
+            {
+                out += "-ERR protocol error\r\n";
+            }
+            freeReplyObject(reply);
+            reply = nullptr;
+        }
+
+        if (reader->err)
+        {
+            out += "-ERR protocol error\r\n";
+            close_after = true;
+        }
+
+        if (out.empty())
+        {
+            if (close_after)
+            {
+                ConnPool::get_connpool()->clean_up_conn(conn->fd);
+                return 0;
+            }
+            // Need more bytes to complete a command.
+            if (resp_issue_recv(conn) == -1)
+            {
+                ConnPool::get_connpool()->clean_up_conn(conn->fd);
+                return -1;
+            }
+            return 0;
+        }
+
+        conn->resp_out = static_cast<char *>(allocator::kv_malloc(out.size()));
+        if (conn->resp_out == nullptr)
+        {
+            ConnPool::get_connpool()->clean_up_conn(conn->fd);
+            return -1;
+        }
+        memcpy(conn->resp_out, out.data(), out.size());
+        conn->resp_out_len = out.size();
+        conn->resp_out_done = 0;
+        conn->resp_close_after = close_after;
+
+        if (resp_issue_send(conn) == -1)
+        {
+            ConnPool::get_connpool()->clean_up_conn(conn->fd);
+            return -1;
+        }
+        return 0;
+    }
+
+    int TcpServers::resp_send_cb(Conn *conn, struct io_uring_cqe *cqe)
+    {
+        int ret = cqe->res;
+        if (ret < 0)
+        {
+            ConnPool::get_connpool()->clean_up_conn(conn->fd);
+            return 0;
+        }
+
+        conn->resp_out_done += static_cast<size_t>(ret);
+        if (conn->resp_out_done < conn->resp_out_len)
+        {
+            // Partial send; queue the remainder.
+            if (resp_issue_send(conn) == -1)
+            {
+                ConnPool::get_connpool()->clean_up_conn(conn->fd);
+                return -1;
+            }
+            return 0;
+        }
+
+        allocator::kv_free(conn->resp_out);
+        conn->resp_out = nullptr;
+        conn->resp_out_len = 0;
+        conn->resp_out_done = 0;
+
+        if (conn->resp_close_after)
+        {
+            ConnPool::get_connpool()->clean_up_conn(conn->fd);
+            return 0;
+        }
+
+        if (resp_issue_recv(conn) == -1)
+        {
             ConnPool::get_connpool()->clean_up_conn(conn->fd);
             return -1;
         }

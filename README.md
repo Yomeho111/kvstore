@@ -280,11 +280,14 @@ Requests and responses can be **batched** — a single round trip may carry mult
 **Request framing**
 
 ```text
-NumHeader            { uint32 num_request }
+NumHeader            { uint8 tag, uint32 num_request }   // packed, 5 bytes
 HeaderInfo[ N ]      { uint32 command, uint32 key_length, uint32 body_length,
                        int sync_idx, TimeoutSpec timeout }
 Body[ N ]            key bytes followed by value bytes
 ```
+
+`tag` is a fixed sentinel (`NUM_HEADER_TAG`, never `'*'`) so the server can tell a
+native request from a Redis RESP command by peeking the first byte.
 
 **Commands** (`CommandIdx`):
 

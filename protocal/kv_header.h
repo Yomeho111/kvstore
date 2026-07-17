@@ -43,9 +43,16 @@ namespace kv_protocal
         KVS_INVALID,
     };
 
-    struct NumHeader
+    // Sentinel stored as the first wire byte of every NumHeader. It must never be
+    // '*' (0x2A) so the RESP auto-detection (which treats a leading '*' as a Redis
+    // command) can never misclassify a native request as RESP, whatever the value
+    // of num_request. Packed so the tag is byte 0 with no padding on the wire.
+    inline constexpr uint8_t NUM_HEADER_TAG = 0x4B; // 'K'
+
+    struct __attribute__((packed)) NumHeader
     {
-        uint32_t num_request;
+        uint8_t tag{NUM_HEADER_TAG};
+        uint32_t num_request{0};
     };
 
     constexpr inline const size_t NUM_HEADER_SIZE = sizeof(NumHeader);

@@ -43,11 +43,20 @@ namespace reactor
         virtual int del_fd(int fd) = 0;
     };
 
+    enum ConnProto
+    {
+        PROTO_UNKNOWN = 0, // not yet detected
+        PROTO_CUSTOM,      // native kvstore binary protocol
+        PROTO_RESP,        // Redis RESP (redis-cli / hiredis / redis-benchmark)
+    };
+
     struct Conn
     {
         bool is_used;
         bool heartbeat_pending;
         int fd;
+        int proto;
+        void *resp_reader;
         network::StatusM status;
         struct ::iovec *r_iovec;
         struct ::iovec *w_iovec;
@@ -59,6 +68,8 @@ namespace reactor
     int accept_callback(int fd);
 
     int recv_callback(int fd);
+
+    int resp_recv_callback(int fd);
 
     int send_callback(int fd);
 
