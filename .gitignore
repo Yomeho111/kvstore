@@ -20,6 +20,8 @@ out/
 *.dt
 data/
 rdb_data/
+benchmark_results/
+*.log
 
 # common binary names
 main
