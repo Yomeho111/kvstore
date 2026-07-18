@@ -42,14 +42,24 @@
 
 namespace proactor
 {
+    enum ConnProto
+    {
+        PROTO_UNKNOWN = 0, // not yet detected
+        PROTO_CUSTOM,      // native kvstore binary protocol
+        PROTO_RESP,        // Redis RESP (redis-cli / hiredis / redis-benchmark)
+    };
+
     struct Conn
     {
         bool is_used;
         bool heartbeat_pending;
         bool expect_reply;
+        bool resp_close_after;
         uint16_t event;
         uint16_t addr_idx;
         int fd;
+        int proto;
+        char peek_byte;
         network::StatusM status;
 
         struct ::iovec *r_iovec;
@@ -58,6 +68,12 @@ namespace proactor
         uint32_t io_iovec_size;
         size_t io_bytes_done;
         size_t io_bytes_total;
+
+        void *resp_reader;
+        char *resp_buf;
+        char *resp_out;
+        size_t resp_out_len;
+        size_t resp_out_done;
     };
 
     class ConnPool
@@ -112,6 +128,14 @@ namespace proactor
         int recv_cb(Conn *conn, struct io_uring_cqe *cqe);
 
         int send_cb(Conn *conn, struct io_uring_cqe *cqe);
+
+        int resp_issue_recv(Conn *conn);
+
+        int resp_issue_send(Conn *conn);
+
+        int resp_recv_cb(Conn *conn, struct io_uring_cqe *cqe);
+
+        int resp_send_cb(Conn *conn, struct io_uring_cqe *cqe);
 
         struct io_uring _ring;
         int _fd_list[PORT_NUM] = {0};

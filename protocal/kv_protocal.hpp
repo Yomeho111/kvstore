@@ -8,6 +8,8 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <string>
+#include <cctype>
 
 #include "status.h"
 #include "engine_interface.hpp"
@@ -37,10 +39,16 @@ namespace kv_protocal
             static int ret = prot._engine.init();
             if (ret < 0)
             {
-                fprintf(stderr, "kv_protocal init failure: %d\n", ret);
-                exit(-1);
+                fprintf(stderr, "corrupted database\n");
+                exit(0);
             }
             return prot;
+        }
+
+        // Trigger an RDB snapshot of the whole dataset (used by the SIGUSR1 handler).
+        int save()
+        {
+            return _engine.save();
         }
 
         int process_num_request(struct network::StatusM *status, uint32_t num_request)
@@ -135,6 +143,7 @@ namespace kv_protocal
             if ((*w_iovec)[0].iov_base == nullptr)
                 return -2;
 
+            ((NumHeader *)(*w_iovec)[0].iov_base)->tag = NUM_HEADER_TAG;
             ((NumHeader *)(*w_iovec)[0].iov_base)->num_request = status->num_request;
 
             (*w_iovec)[1].iov_len = sizeof(HeaderInfo) * status->num_request;
@@ -181,6 +190,7 @@ namespace kv_protocal
             (*w_iovec)[0].iov_base = allocator::kv_malloc(NUM_HEADER_SIZE);
             if ((*w_iovec)[0].iov_base == nullptr)
                 return -2;
+            ((NumHeader *)(*w_iovec)[0].iov_base)->tag = NUM_HEADER_TAG;
             ((NumHeader *)(*w_iovec)[0].iov_base)->num_request = 1;
 
             // [1] HeaderInfo with sync_idx
@@ -207,9 +217,291 @@ namespace kv_protocal
             return 0;
         }
 
+        // Execute one already-parsed RESP (Redis protocol) command.
+        // argv/argvlen hold the command name and its arguments (parsed by the
+        // hiredis reader in the reactor). The RESP-encoded reply is appended to
+        // `out`. Returns 0 normally, or 1 if the connection should be closed
+        // after the reply is sent (QUIT).
+        int process_resp_command(int argc, char **argv, size_t *argvlen, std::string &out)
+        {
+            if (argc <= 0 || argv == nullptr || argvlen == nullptr || argv[0] == nullptr)
+            {
+                out += "-ERR invalid request\r\n";
+                return 0;
+            }
+
+            // Redis command names are case-insensitive.
+            char cmd[16] = {0};
+            size_t cmd_len = argvlen[0] < sizeof(cmd) - 1 ? argvlen[0] : sizeof(cmd) - 1;
+            for (size_t i = 0; i < cmd_len; i++)
+                cmd[i] = static_cast<char>(::toupper(static_cast<unsigned char>(argv[0][i])));
+
+            if (strcmp(cmd, "PING") == 0)
+            {
+                if (argc >= 2)
+                    _resp_append_bulk(out, argv[1], argvlen[1]);
+                else
+                    out += "+PONG\r\n";
+                return 0;
+            }
+            else if (strcmp(cmd, "SET") == 0)
+            {
+                if (argc < 3)
+                {
+                    out += "-ERR wrong number of arguments for 'set' command\r\n";
+                    return 0;
+                }
+                // Optional expiry: SET key value [EX seconds | PX milliseconds].
+                TimeoutSpec ts;
+                bool has_expiry = false;
+                for (int i = 3; i < argc;)
+                {
+                    char opt[8] = {0};
+                    size_t ol = argvlen[i] < sizeof(opt) - 1 ? argvlen[i] : sizeof(opt) - 1;
+                    for (size_t j = 0; j < ol; j++)
+                        opt[j] = static_cast<char>(::toupper(static_cast<unsigned char>(argv[i][j])));
+                    bool is_ex = strcmp(opt, "EX") == 0;
+                    bool is_px = strcmp(opt, "PX") == 0;
+                    if ((is_ex || is_px) && i + 1 < argc)
+                    {
+                        long long amt;
+                        if (!_resp_to_ll(argv[i + 1], argvlen[i + 1], amt) || amt <= 0)
+                        {
+                            out += "-ERR invalid expire time in 'set' command\r\n";
+                            return 0;
+                        }
+                        if (is_ex)
+                            _fill_timeout_sec(ts, amt);
+                        else
+                            _fill_timeout_ms(ts, amt);
+                        has_expiry = true;
+                        i += 2;
+                    }
+                    else
+                    {
+                        out += "-ERR syntax error\r\n";
+                        return 0;
+                    }
+                }
+                // Redis SET overwrites an existing key. The engine's set()
+                // refuses to replace one (returns > 0), so fall back to modify().
+                TimeoutSpec *tp = has_expiry ? &ts : nullptr;
+                int ret = _engine.set(argv[1], argvlen[1], argv[2], argvlen[2], tp);
+                if (ret > 0)
+                    ret = _engine.modify(argv[1], argvlen[1], argv[2], argvlen[2], tp);
+                if (ret == 0)
+                    out += "+OK\r\n";
+                else
+                    out += "-ERR set failed\r\n";
+                return 0;
+            }
+            else if (strcmp(cmd, "SETEX") == 0 || strcmp(cmd, "PSETEX") == 0)
+            {
+                // SETEX key seconds value / PSETEX key milliseconds value
+                if (argc < 4)
+                {
+                    out += "-ERR wrong number of arguments for 'setex' command\r\n";
+                    return 0;
+                }
+                long long amt;
+                if (!_resp_to_ll(argv[2], argvlen[2], amt) || amt <= 0)
+                {
+                    out += "-ERR invalid expire time in 'setex' command\r\n";
+                    return 0;
+                }
+                TimeoutSpec ts;
+                if (cmd[0] == 'P')
+                    _fill_timeout_ms(ts, amt);
+                else
+                    _fill_timeout_sec(ts, amt);
+                int ret = _engine.set(argv[1], argvlen[1], argv[3], argvlen[3], &ts);
+                if (ret > 0)
+                    ret = _engine.modify(argv[1], argvlen[1], argv[3], argvlen[3], &ts);
+                if (ret == 0)
+                    out += "+OK\r\n";
+                else
+                    out += "-ERR setex failed\r\n";
+                return 0;
+            }
+            else if (strcmp(cmd, "EXPIRE") == 0 || strcmp(cmd, "PEXPIRE") == 0)
+            {
+                // EXPIRE key seconds / PEXPIRE key milliseconds
+                if (argc < 3)
+                {
+                    out += "-ERR wrong number of arguments for 'expire' command\r\n";
+                    return 0;
+                }
+                long long amt;
+                if (!_resp_to_ll(argv[2], argvlen[2], amt))
+                {
+                    out += "-ERR value is not an integer or out of range\r\n";
+                    return 0;
+                }
+                // A non-positive expiry deletes the key immediately (Redis semantics).
+                if (amt <= 0)
+                {
+                    int d = _engine.del(argv[1], argvlen[1]);
+                    _resp_append_int(out, d == 0 ? 1 : 0);
+                    return 0;
+                }
+                // Re-apply the current value with a timeout to schedule expiry.
+                char *value = nullptr;
+                int r = _engine.get(argv[1], argvlen[1], &value);
+                if (r <= 0)
+                {
+                    _resp_append_int(out, 0); // key does not exist
+                    return 0;
+                }
+                TimeoutSpec ts;
+                if (cmd[0] == 'P')
+                    _fill_timeout_ms(ts, amt);
+                else
+                    _fill_timeout_sec(ts, amt);
+                int ret = _engine.modify(argv[1], argvlen[1], value, static_cast<size_t>(r) - 2, &ts);
+                allocator::kv_free(value);
+                _resp_append_int(out, ret == 0 ? 1 : 0);
+                return 0;
+            }
+            else if (strcmp(cmd, "GET") == 0)
+            {
+                if (argc < 2)
+                {
+                    out += "-ERR wrong number of arguments for 'get' command\r\n";
+                    return 0;
+                }
+                char *value = nullptr;
+                int ret = _engine.get(argv[1], argvlen[1], &value);
+                if (ret > 0)
+                {
+                    // get() returns the value followed by a trailing "\r\n" and a
+                    // length of value_size + 2; we reuse that "\r\n" as the RESP
+                    // bulk-string terminator.
+                    size_t vlen = static_cast<size_t>(ret) - 2;
+                    char hdr[32];
+                    int n = snprintf(hdr, sizeof(hdr), "$%zu\r\n", vlen);
+                    out.append(hdr, n);
+                    out.append(value, ret);
+                    allocator::kv_free(value);
+                }
+                else if (ret == 0)
+                    out += "$-1\r\n"; // nil
+                else
+                    out += "-ERR get failed\r\n";
+                return 0;
+            }
+            else if (strcmp(cmd, "DEL") == 0)
+            {
+                if (argc < 2)
+                {
+                    out += "-ERR wrong number of arguments for 'del' command\r\n";
+                    return 0;
+                }
+                int deleted = 0;
+                for (int i = 1; i < argc; i++)
+                    if (_engine.del(argv[i], argvlen[i]) == 0)
+                        deleted++;
+                _resp_append_int(out, deleted);
+                return 0;
+            }
+            else if (strcmp(cmd, "EXISTS") == 0)
+            {
+                if (argc < 2)
+                {
+                    out += "-ERR wrong number of arguments for 'exists' command\r\n";
+                    return 0;
+                }
+                int found = 0;
+                for (int i = 1; i < argc; i++)
+                    if (_engine.exist(argv[i], argvlen[i]) == 0)
+                        found++;
+                _resp_append_int(out, found);
+                return 0;
+            }
+            else if (strcmp(cmd, "QUIT") == 0)
+            {
+                out += "+OK\r\n";
+                return 1;
+            }
+            else if (strcmp(cmd, "SELECT") == 0 || strcmp(cmd, "CLIENT") == 0)
+            {
+                // Not implemented, but reply OK so redis-cli / redis-benchmark
+                // can complete their handshake.
+                out += "+OK\r\n";
+                return 0;
+            }
+            else if (strcmp(cmd, "COMMAND") == 0 || strcmp(cmd, "CONFIG") == 0)
+            {
+                out += "*0\r\n"; // empty array
+                return 0;
+            }
+
+            out += "-ERR unknown command\r\n";
+            return 0;
+        }
+
     private:
         KvProtocal() {}
         ~KvProtocal() {}
+
+        static void _resp_append_int(std::string &out, long long v)
+        {
+            char buf[32];
+            int n = snprintf(buf, sizeof(buf), ":%lld\r\n", v);
+            out.append(buf, n);
+        }
+
+        static void _resp_append_bulk(std::string &out, const char *data, size_t len)
+        {
+            char hdr[32];
+            int n = snprintf(hdr, sizeof(hdr), "$%zu\r\n", len);
+            out.append(hdr, n);
+            out.append(data, len);
+            out.append("\r\n", 2);
+        }
+
+        // Parse a base-10 integer argument (bounded to avoid overflow). Returns
+        // false on any non-numeric input.
+        static bool _resp_to_ll(const char *s, size_t len, long long &out)
+        {
+            if (s == nullptr || len == 0 || len > 18)
+                return false;
+            long long v = 0;
+            size_t i = 0;
+            bool neg = false;
+            if (s[0] == '-')
+            {
+                neg = true;
+                i = 1;
+            }
+            else if (s[0] == '+')
+            {
+                i = 1;
+            }
+            if (i == len)
+                return false;
+            for (; i < len; i++)
+            {
+                if (s[i] < '0' || s[i] > '9')
+                    return false;
+                v = v * 10 + (s[i] - '0');
+            }
+            out = neg ? -v : v;
+            return true;
+        }
+
+        // Fill a TimeoutSpec (interpreted by the engine as a relative TTL) from
+        // a whole number of seconds or milliseconds.
+        static void _fill_timeout_sec(TimeoutSpec &ts, long long seconds)
+        {
+            ts.tv_sec = static_cast<long>(seconds);
+            ts.tv_nsec = 0;
+        }
+
+        static void _fill_timeout_ms(TimeoutSpec &ts, long long ms)
+        {
+            ts.tv_sec = static_cast<long>(ms / 1000);
+            ts.tv_nsec = static_cast<long>((ms % 1000) * 1000000);
+        }
 
         int _split_token(char *body, char **tokens, uint32_t key_length)
         {
@@ -346,6 +638,7 @@ namespace kv_protocal
             (*w_iovec)[0].iov_base = allocator::kv_malloc(NUM_HEADER_SIZE);
             if ((*w_iovec)[0].iov_base == nullptr)
                 return -2;
+            ((NumHeader *)(*w_iovec)[0].iov_base)->tag = NUM_HEADER_TAG;
             ((NumHeader *)(*w_iovec)[0].iov_base)->num_request = num;
 
             (*w_iovec)[1].iov_len = sizeof(HeaderInfo) * num;
@@ -401,6 +694,7 @@ namespace kv_protocal
             (*w_iovec)[0].iov_base = allocator::kv_malloc(NUM_HEADER_SIZE);
             if ((*w_iovec)[0].iov_base == nullptr)
                 return -2;
+            ((NumHeader *)(*w_iovec)[0].iov_base)->tag = NUM_HEADER_TAG;
             ((NumHeader *)(*w_iovec)[0].iov_base)->num_request = num;
 
             (*w_iovec)[1].iov_len = sizeof(HeaderInfo) * num;
@@ -450,6 +744,7 @@ namespace kv_protocal
             (*w_iovec)[0].iov_base = allocator::kv_malloc(NUM_HEADER_SIZE);
             if ((*w_iovec)[0].iov_base == nullptr)
                 return -2;
+            ((NumHeader *)(*w_iovec)[0].iov_base)->tag = NUM_HEADER_TAG;
             ((NumHeader *)(*w_iovec)[0].iov_base)->num_request = 0;
 
             status->status = network::SEND_RESPONSE;

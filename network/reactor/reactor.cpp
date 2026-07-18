@@ -2,10 +2,15 @@
 
 #include <unistd.h>
 #include <errno.h>
+#include <string>
 #include "allocator.h"
 #include "kv_protocal.hpp"
 #include "network_utils.h"
 #include "timer.h"
+#include "hiredis.h"
+
+#define RESP_RECV_BUF_SIZE 16384
+#define RESP_MAX_ARGS 64
 
 namespace reactor
 {
@@ -87,6 +92,13 @@ namespace reactor
         _pool[fd].send_cb = nullptr;
         _pool[fd].status.num_request = 0;
         _pool[fd].servers = nullptr;
+
+        if (_pool[fd].resp_reader)
+        {
+            redisReaderFree(static_cast<redisReader *>(_pool[fd].resp_reader));
+            _pool[fd].resp_reader = nullptr;
+        }
+        _pool[fd].proto = PROTO_UNKNOWN;
     }
 
     int ConnPool::setup_accept_conn(int fd, TcpBase *servers)
@@ -120,6 +132,7 @@ namespace reactor
         _pool[fd].recv_cb = recv_callback;
         _pool[fd].send_cb = send_callback;
         _pool[fd].servers = servers;
+        _pool[fd].proto = PROTO_UNKNOWN;
 
         return 0;
     }
@@ -326,6 +339,36 @@ namespace reactor
 
         Conn *conn = (*pool)[fd];
 
+        if (conn->proto == PROTO_UNKNOWN)
+        {
+            // Peek the first byte to distinguish the native binary protocol from
+            // RESP. RESP multi-bulk commands (redis-cli / hiredis / redis-benchmark)
+            // always begin with '*'; the native protocol begins with a NumHeader.
+            char c = 0;
+            int pk = recv(fd, &c, 1, MSG_PEEK);
+            if (pk == 0)
+            {
+                if (conn->servers->del_fd(fd) == -1)
+                    perror("error del_fd");
+                pool->clean_up_conn(fd);
+                return 0;
+            }
+            if (pk < 0)
+            {
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                    return 0;
+                perror("Error recv");
+                if (conn->servers->del_fd(fd) == -1)
+                    perror("error del_fd");
+                pool->clean_up_conn(fd);
+                return -1;
+            }
+            conn->proto = (c == '*') ? PROTO_RESP : PROTO_CUSTOM;
+        }
+
+        if (conn->proto == PROTO_RESP)
+            return resp_recv_callback(fd);
+
         switch (conn->status.status)
         {
             case network::READ_NUM_REQUEST:
@@ -463,6 +506,102 @@ namespace reactor
         return ret;
     }
 
+    int resp_recv_callback(int fd)
+    {
+        auto *pool = ConnPool::get_connpool();
+        Conn *conn = (*pool)[fd];
+
+        if (conn->resp_reader == nullptr)
+        {
+            conn->resp_reader = redisReaderCreate();
+            if (conn->resp_reader == nullptr)
+                goto clean;
+        }
+
+        {
+            char buf[RESP_RECV_BUF_SIZE];
+            int n = recv(fd, buf, sizeof(buf), 0);
+            if (n == 0)
+                goto clean;
+            if (n < 0)
+            {
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                    return 0;
+                perror("Error recv");
+                goto clean;
+            }
+
+            redisReader *reader = static_cast<redisReader *>(conn->resp_reader);
+            if (redisReaderFeed(reader, buf, n) != REDIS_OK)
+                goto clean;
+
+            std::string out;
+            bool close_after = false;
+            void *reply = nullptr;
+
+            // A single read may carry several pipelined commands; drain them all.
+            while (redisReaderGetReply(reader, &reply) == REDIS_OK && reply != nullptr)
+            {
+                redisReply *rr = static_cast<redisReply *>(reply);
+                if (rr->type == REDIS_REPLY_ARRAY && rr->elements > 0)
+                {
+                    int argc = static_cast<int>(rr->elements);
+                    if (argc > RESP_MAX_ARGS)
+                    {
+                        out += "-ERR too many arguments\r\n";
+                    }
+                    else
+                    {
+                        char *argv[RESP_MAX_ARGS];
+                        size_t argvlen[RESP_MAX_ARGS];
+                        for (int i = 0; i < argc; i++)
+                        {
+                            argv[i] = rr->element[i]->str;
+                            argvlen[i] = rr->element[i]->len;
+                        }
+                        if (kv_protocal::KvStoreProtocal::instance().process_resp_command(argc, argv, argvlen, out) == 1)
+                            close_after = true;
+                    }
+                }
+                else
+                {
+                    out += "-ERR protocol error\r\n";
+                }
+                freeReplyObject(reply);
+                reply = nullptr;
+            }
+
+            if (reader->err)
+            {
+                out += "-ERR protocol error\r\n";
+                close_after = true;
+            }
+
+            if (!out.empty())
+            {
+                struct ::iovec io;
+                io.iov_base = const_cast<char *>(out.data());
+                io.iov_len = out.size();
+                if (writev_all(fd, &io, 1) < 0)
+                {
+                    perror("error send");
+                    goto clean;
+                }
+            }
+
+            if (close_after)
+                goto clean;
+        }
+
+        return 0;
+
+    clean:
+        if (conn->servers->del_fd(fd) == -1)
+            perror("error del_fd");
+        pool->clean_up_conn(fd);
+        return 0;
+    }
+
     int send_callback(int fd)
     {
         if (fd < 0 || fd >= MAX_CONN_SIZE)
@@ -570,6 +709,8 @@ namespace reactor
             perror("error setup_accept_conn");
             return -1;
         }
+        // The slave -> master link always speaks the native binary protocol.
+        (*pool)[fd]->proto = PROTO_CUSTOM;
 
         return fd;
     }

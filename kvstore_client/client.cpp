@@ -353,7 +353,8 @@ namespace kv_client
         response->num_response = 0;
         response->responses = nullptr;
 
-        kv_protocal::NumHeader num_header{num_request};
+        kv_protocal::NumHeader num_header{};
+        num_header.num_request = num_request;
         kv_protocal::HeaderInfo *req_info = static_cast<kv_protocal::HeaderInfo *>(
             allocator::kv_malloc(num_request * sizeof(kv_protocal::HeaderInfo)));
         if (req_info == nullptr)

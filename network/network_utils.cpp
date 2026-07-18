@@ -15,59 +15,66 @@ ssize_t readv_full(int fd, const struct ::iovec *iov, int iovcnt)
     if (fd < 0 || iov == nullptr || iovcnt <= 0)
         return -1;
 
-    // Make a mutable copy because we need to adjust iov_base/iov_len
+    // Mutable copy because we adjust iov_base/iov_len on short reads. readv()
+    // accepts at most IOV_MAX segments per call, so process the input in
+    // windows of at most IOV_MAX and drain each window fully. This supports an
+    // arbitrary iovcnt with no heap allocation; when iovcnt <= IOV_MAX the loop
+    // runs exactly once (identical to the single-window path).
     struct ::iovec local_iov[IOV_MAX];
 
-    if (iovcnt > IOV_MAX)
-    {
-        errno = EINVAL;
-        return -1;
-    }
-
-    std::memcpy(local_iov, iov, sizeof(struct ::iovec) * iovcnt);
-
     ssize_t total_read = 0;
-    int cur = 0;
 
-    while (cur < iovcnt)
+    for (int base = 0; base < iovcnt;)
     {
-        ssize_t n = readv(fd, &local_iov[cur], iovcnt - cur);
+        int cnt = iovcnt - base;
+        if (cnt > IOV_MAX)
+            cnt = IOV_MAX;
 
-        if (n > 0)
+        std::memcpy(local_iov, iov + base, sizeof(struct ::iovec) * cnt);
+
+        int cur = 0;
+        while (cur < cnt)
         {
-            total_read += n;
+            ssize_t n = readv(fd, &local_iov[cur], cnt - cur);
 
-            while (cur < iovcnt && n >= static_cast<ssize_t>(local_iov[cur].iov_len))
+            if (n > 0)
             {
-                n -= local_iov[cur].iov_len;
-                cur++;
-            }
+                total_read += n;
 
-            if (cur < iovcnt && n > 0)
+                while (cur < cnt && n >= static_cast<ssize_t>(local_iov[cur].iov_len))
+                {
+                    n -= local_iov[cur].iov_len;
+                    cur++;
+                }
+
+                if (cur < cnt && n > 0)
+                {
+                    local_iov[cur].iov_base =
+                        static_cast<char *>(local_iov[cur].iov_base) + n;
+                    local_iov[cur].iov_len -= n;
+                }
+
+                continue;
+            }
+            else if (n == 0)
             {
-                local_iov[cur].iov_base =
-                    static_cast<char *>(local_iov[cur].iov_base) + n;
-                local_iov[cur].iov_len -= n;
+                // Peer closed connection before all expected bytes were read
+                return total_read;
             }
+            else if (errno == EINTR)
+            {
+                continue;
+            }
+            else if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                // Non-blocking socket has no more data right now
+                return total_read;
+            }
+            else
+                return -1;
+        }
 
-            continue;
-        }
-        else if (n == 0)
-        {
-            // Peer closed connection before all expected bytes were read
-            return total_read;
-        }
-        else if (errno == EINTR)
-        {
-            continue;
-        }
-        else if (errno == EAGAIN || errno == EWOULDBLOCK)
-        {
-            // Non-blocking socket has no more data right now
-            return total_read;
-        }
-        else
-            return -1;
+        base += cnt;
     }
 
     return total_read;
@@ -78,59 +85,67 @@ ssize_t writev_all(int fd, const struct ::iovec *iov, int iovcnt)
     if (fd < 0 || iov == nullptr || iovcnt <= 0)
         return -1;
 
+    // Mutable copy because we adjust iov_base/iov_len on short writes. writev()
+    // accepts at most IOV_MAX segments per call, so process the input in
+    // windows of at most IOV_MAX and drain each window fully. This supports an
+    // arbitrary iovcnt with no heap allocation; when iovcnt <= IOV_MAX the loop
+    // runs exactly once (identical to the single-window path).
     struct ::iovec local_iov[IOV_MAX];
 
-    if (iovcnt > IOV_MAX)
-    {
-        errno = EINVAL;
-        return -1;
-    }
-
-    std::memcpy(local_iov, iov, sizeof(struct ::iovec) * iovcnt);
-
     ssize_t total_written = 0;
-    int cur = 0;
 
-    while (cur < iovcnt)
+    for (int base = 0; base < iovcnt;)
     {
-        ssize_t n = writev(fd, &local_iov[cur], iovcnt - cur);
+        int cnt = iovcnt - base;
+        if (cnt > IOV_MAX)
+            cnt = IOV_MAX;
 
-        if (n > 0)
+        std::memcpy(local_iov, iov + base, sizeof(struct ::iovec) * cnt);
+
+        int cur = 0;
+        while (cur < cnt)
         {
-            total_written += n;
+            ssize_t n = writev(fd, &local_iov[cur], cnt - cur);
 
-            while (cur < iovcnt && n >= static_cast<ssize_t>(local_iov[cur].iov_len))
+            if (n > 0)
             {
-                n -= local_iov[cur].iov_len;
-                cur++;
-            }
+                total_written += n;
 
-            if (cur < iovcnt && n > 0)
+                while (cur < cnt && n >= static_cast<ssize_t>(local_iov[cur].iov_len))
+                {
+                    n -= local_iov[cur].iov_len;
+                    cur++;
+                }
+
+                if (cur < cnt && n > 0)
+                {
+                    local_iov[cur].iov_base =
+                        static_cast<char *>(local_iov[cur].iov_base) + n;
+                    local_iov[cur].iov_len -= n;
+                }
+
+                continue;
+            }
+            else if (n == 0)
             {
-                local_iov[cur].iov_base =
-                    static_cast<char *>(local_iov[cur].iov_base) + n;
-                local_iov[cur].iov_len -= n;
+                // writev returning 0 usually means no progress
+                errno = EPIPE;
+                return -1;
             }
+            else if (errno == EINTR)
+            {
+                continue;
+            }
+            else if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                // Non-blocking socket cannot write more right now
+                return total_written;
+            }
+            else
+                return -1;
+        }
 
-            continue;
-        }
-        else if (n == 0)
-        {
-            // writev returning 0 usually means no progress
-            errno = EPIPE;
-            return -1;
-        }
-        else if (errno == EINTR)
-        {
-            continue;
-        }
-        else if (errno == EAGAIN || errno == EWOULDBLOCK)
-        {
-            // Non-blocking socket cannot write more right now
-            return total_written;
-        }
-        else
-            return -1;
+        base += cnt;
     }
 
     return total_written;

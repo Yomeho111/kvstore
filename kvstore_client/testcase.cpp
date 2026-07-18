@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "allocator.h"
+#include "hiredis.h"
 
 #define N 500000
 
@@ -273,6 +274,531 @@ void testcase_del(kv_client::KvClient &client)
     }
 }
 
+constexpr int UNIQUE_KV_COUNT = 1000;
+
+static std::string make_unique_key(int i)
+{
+    return "ukey" + std::to_string(i);
+}
+
+static std::string make_unique_value(int i)
+{
+    return "uval" + std::to_string(i);
+}
+
+// SET UNIQUE_KV_COUNT key/value pairs, each with a distinct key and a distinct value.
+void testcase_set_unique(kv_client::KvClient &client)
+{
+    constexpr int BATCH_SIZE = 128;
+
+    for (int begin = 1; begin <= UNIQUE_KV_COUNT; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE - 1, UNIQUE_KV_COUNT);
+        int batch_count = end - begin + 1;
+
+        std::vector<std::string> keys;
+        std::vector<std::string> values;
+        std::vector<kv_client::KvRequest> requests;
+        std::vector<const char *> patterns;
+
+        keys.reserve(batch_count);
+        values.reserve(batch_count);
+        requests.reserve(batch_count);
+        patterns.reserve(batch_count);
+
+        for (int i = begin; i <= end; ++i)
+        {
+            keys.emplace_back(make_unique_key(i));
+            values.emplace_back(make_unique_value(i));
+
+            requests.push_back({"SET",
+                                keys.back().c_str(),
+                                values.back().c_str()});
+
+            patterns.push_back("OK\r\n");
+        }
+
+        std::string testcase_name =
+            "batch-set-unique-" + std::to_string(begin) + "-" + std::to_string(end);
+
+        batch_testcase(
+            client,
+            requests.data(),
+            patterns.data(),
+            requests.size(),
+            testcase_name.c_str());
+    }
+}
+
+// First half of testcase_set_unique: SET ukey1 .. ukey[UNIQUE_KV_COUNT/2].
+void testcase_set_unique_first_half(kv_client::KvClient &client)
+{
+    constexpr int BATCH_SIZE = 128;
+    constexpr int HALF = UNIQUE_KV_COUNT / 2;
+
+    for (int begin = 1; begin <= HALF; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE - 1, HALF);
+        int batch_count = end - begin + 1;
+
+        std::vector<std::string> keys;
+        std::vector<std::string> values;
+        std::vector<kv_client::KvRequest> requests;
+        std::vector<const char *> patterns;
+
+        keys.reserve(batch_count);
+        values.reserve(batch_count);
+        requests.reserve(batch_count);
+        patterns.reserve(batch_count);
+
+        for (int i = begin; i <= end; ++i)
+        {
+            keys.emplace_back(make_unique_key(i));
+            values.emplace_back(make_unique_value(i));
+
+            requests.push_back({"SET",
+                                keys.back().c_str(),
+                                values.back().c_str()});
+
+            patterns.push_back("OK\r\n");
+        }
+
+        std::string testcase_name =
+            "batch-set-unique-first-" + std::to_string(begin) + "-" + std::to_string(end);
+
+        batch_testcase(
+            client,
+            requests.data(),
+            patterns.data(),
+            requests.size(),
+            testcase_name.c_str());
+    }
+}
+
+// Second half of testcase_set_unique: SET ukey[UNIQUE_KV_COUNT/2 + 1] .. ukey[UNIQUE_KV_COUNT].
+void testcase_set_unique_second_half(kv_client::KvClient &client)
+{
+    constexpr int BATCH_SIZE = 128;
+    constexpr int HALF = UNIQUE_KV_COUNT / 2;
+
+    for (int begin = HALF + 1; begin <= UNIQUE_KV_COUNT; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE - 1, UNIQUE_KV_COUNT);
+        int batch_count = end - begin + 1;
+
+        std::vector<std::string> keys;
+        std::vector<std::string> values;
+        std::vector<kv_client::KvRequest> requests;
+        std::vector<const char *> patterns;
+
+        keys.reserve(batch_count);
+        values.reserve(batch_count);
+        requests.reserve(batch_count);
+        patterns.reserve(batch_count);
+
+        for (int i = begin; i <= end; ++i)
+        {
+            keys.emplace_back(make_unique_key(i));
+            values.emplace_back(make_unique_value(i));
+
+            requests.push_back({"SET",
+                                keys.back().c_str(),
+                                values.back().c_str()});
+
+            patterns.push_back("OK\r\n");
+        }
+
+        std::string testcase_name =
+            "batch-set-unique-second-" + std::to_string(begin) + "-" + std::to_string(end);
+
+        batch_testcase(
+            client,
+            requests.data(),
+            patterns.data(),
+            requests.size(),
+            testcase_name.c_str());
+    }
+}
+
+// GET the UNIQUE_KV_COUNT pairs written by testcase_set_unique and verify each value.
+void testcase_get_unique(kv_client::KvClient &client)
+{
+    constexpr int BATCH_SIZE = 128;
+
+    for (int begin = 1; begin <= UNIQUE_KV_COUNT; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE - 1, UNIQUE_KV_COUNT);
+        int batch_count = end - begin + 1;
+
+        std::vector<std::string> keys;
+        std::vector<std::string> expected;
+        std::vector<kv_client::KvRequest> requests;
+        std::vector<const char *> patterns;
+
+        keys.reserve(batch_count);
+        expected.reserve(batch_count);
+        requests.reserve(batch_count);
+        patterns.reserve(batch_count);
+
+        for (int i = begin; i <= end; ++i)
+        {
+            keys.emplace_back(make_unique_key(i));
+            expected.emplace_back(make_unique_value(i) + "\r\n");
+
+            requests.push_back({"GET",
+                                keys.back().c_str(),
+                                ""});
+
+            patterns.push_back(expected.back().c_str());
+        }
+
+        std::string testcase_name =
+            "batch-get-unique-" + std::to_string(begin) + "-" + std::to_string(end);
+
+        batch_testcase(
+            client,
+            requests.data(),
+            patterns.data(),
+            requests.size(),
+            testcase_name.c_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-step timer / expiration test.
+//
+//   t0        : SET TIMER_STEP_KV unique KV, each with a 1s expiration.
+//   T1 .. T5  : 1.5s after the previous step, GET the previous step's batch
+//               (every key must have expired -> "NOT EXIST") and then SET a
+//               fresh batch of TIMER_STEP_KV unique KV, again with a 1s TTL.
+//
+// The 1.5s spacing is deliberately larger than the 1s TTL, so each batch is
+// guaranteed to be gone by the time it is read back one step later. This keeps
+// the server-side timer under a sustained set/expire workload.
+// ---------------------------------------------------------------------------
+constexpr int TIMER_STEP_KV = 10000;                // unique KV per step
+constexpr int TIMER_STEPS = 5;                      // T1 .. T5
+constexpr int TIMER_STEP_INTERVAL_US = 1500 * 1000; // 1.5s between steps
+
+static std::string make_timer_key(int step, int i)
+{
+    return "tmkey_" + std::to_string(step) + "_" + std::to_string(i);
+}
+
+static std::string make_timer_value(int step, int i)
+{
+    return "tmval_" + std::to_string(step) + "_" + std::to_string(i);
+}
+
+// SET the whole batch for `step`, each key carrying a 1s expiration.
+static void timer_set_batch(kv_client::KvClient &client, int step)
+{
+    constexpr int BATCH_SIZE = 128;
+    const kv_protocal::TimeoutSpec ttl{1, 0}; // 1 second
+
+    for (int begin = 0; begin < TIMER_STEP_KV; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE, TIMER_STEP_KV);
+        int batch_count = end - begin;
+
+        std::vector<std::string> keys;
+        std::vector<std::string> values;
+        std::vector<kv_client::KvRequest> requests;
+        std::vector<const char *> patterns;
+
+        keys.reserve(batch_count);
+        values.reserve(batch_count);
+        requests.reserve(batch_count);
+        patterns.reserve(batch_count);
+
+        for (int i = begin; i < end; ++i)
+        {
+            keys.emplace_back(make_timer_key(step, i));
+            values.emplace_back(make_timer_value(step, i));
+
+            requests.push_back({"SET",
+                                keys.back().c_str(),
+                                values.back().c_str(),
+                                ttl});
+            patterns.push_back("OK\r\n");
+        }
+
+        std::string testcase_name =
+            "timer-set-step" + std::to_string(step) + "-" + std::to_string(begin);
+
+        batch_testcase(
+            client,
+            requests.data(),
+            patterns.data(),
+            requests.size(),
+            testcase_name.c_str());
+    }
+}
+
+// GET the whole batch for `step` and assert every key has expired.
+static void timer_verify_expired(kv_client::KvClient &client, int step)
+{
+    constexpr int BATCH_SIZE = 128;
+
+    for (int begin = 0; begin < TIMER_STEP_KV; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE, TIMER_STEP_KV);
+        int batch_count = end - begin;
+
+        std::vector<std::string> keys;
+        std::vector<kv_client::KvRequest> requests;
+        std::vector<const char *> patterns;
+
+        keys.reserve(batch_count);
+        requests.reserve(batch_count);
+        patterns.reserve(batch_count);
+
+        for (int i = begin; i < end; ++i)
+        {
+            keys.emplace_back(make_timer_key(step, i));
+
+            requests.push_back({"GET",
+                                keys.back().c_str(),
+                                ""});
+            patterns.push_back("NOT EXIST\r\n");
+        }
+
+        std::string testcase_name =
+            "timer-expired-step" + std::to_string(step) + "-" + std::to_string(begin);
+
+        batch_testcase(
+            client,
+            requests.data(),
+            patterns.data(),
+            requests.size(),
+            testcase_name.c_str());
+    }
+}
+
+void testcase_timer_multi_step(kv_client::KvClient &client)
+{
+    // t0: seed the first batch.
+    timer_set_batch(client, 0);
+    printf("timer-multi-step: t0 SET %d KV (1s TTL)\n", TIMER_STEP_KV);
+
+    // T1 .. T5: wait past the TTL, confirm the previous batch expired, seed the next.
+    for (int step = 1; step <= TIMER_STEPS; ++step)
+    {
+        usleep(TIMER_STEP_INTERVAL_US);
+
+        timer_verify_expired(client, step - 1);
+        timer_set_batch(client, step);
+
+        printf("timer-multi-step: T%d verified step %d expired + SET %d new KV\n",
+               step, step - 1, TIMER_STEP_KV);
+    }
+
+    printf("==> PASSED -> timer-multi-step (%d steps, %d KV/step, 1s TTL, 1.5s spacing)\n",
+           TIMER_STEPS, TIMER_STEP_KV);
+}
+
+// ===========================================================================
+// RESP protocol testcases driven through the hiredis synchronous client.
+// These mirror testcase_set_unique / testcase_get_unique / testcase_timer_multi_step
+// but talk to the server over Redis RESP instead of the native KvClient.
+// ===========================================================================
+
+static redisContext *resp_connect(const char *ip, uint16_t port)
+{
+    redisContext *c = redisConnect(ip, port);
+    if (c == nullptr || c->err)
+    {
+        printf("==> FAILED -> resp connect: %s\n", c ? c->errstr : "cannot allocate context");
+        if (c)
+            redisFree(c);
+        exit(1);
+    }
+    return c;
+}
+
+// RESP mirror of testcase_set_unique: SET every unique pair, expect +OK.
+void resp_testcase_set_unique(const char *ip, uint16_t port)
+{
+    constexpr int BATCH_SIZE = 128;
+    redisContext *c = resp_connect(ip, port);
+
+    for (int begin = 1; begin <= UNIQUE_KV_COUNT; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE - 1, UNIQUE_KV_COUNT);
+
+        // Pipeline the whole batch, then read the replies back.
+        for (int i = begin; i <= end; ++i)
+        {
+            std::string key = make_unique_key(i);
+            std::string value = make_unique_value(i);
+            redisAppendCommand(c, "SET %s %s", key.c_str(), value.c_str());
+        }
+
+        for (int i = begin; i <= end; ++i)
+        {
+            redisReply *reply = nullptr;
+            if (redisGetReply(c, (void **)&reply) != REDIS_OK || reply == nullptr)
+            {
+                printf("==> FAILED -> resp-set-unique[%d], no reply: %s\n", i, c->errstr);
+                redisFree(c);
+                exit(1);
+            }
+            if (reply->type != REDIS_REPLY_STATUS || strcmp(reply->str, "OK") != 0)
+            {
+                printf("==> FAILED -> resp-set-unique[%d], unexpected reply (type=%d)\n", i, reply->type);
+                freeReplyObject(reply);
+                redisFree(c);
+                exit(1);
+            }
+            freeReplyObject(reply);
+        }
+    }
+
+    redisFree(c);
+    printf("==> PASSED -> resp-set-unique (%d KV over RESP)\n", UNIQUE_KV_COUNT);
+}
+
+// RESP mirror of testcase_get_unique: GET every pair, verify the bulk value.
+void resp_testcase_get_unique(const char *ip, uint16_t port)
+{
+    constexpr int BATCH_SIZE = 128;
+    redisContext *c = resp_connect(ip, port);
+
+    for (int begin = 1; begin <= UNIQUE_KV_COUNT; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE - 1, UNIQUE_KV_COUNT);
+
+        for (int i = begin; i <= end; ++i)
+        {
+            std::string key = make_unique_key(i);
+            redisAppendCommand(c, "GET %s", key.c_str());
+        }
+
+        for (int i = begin; i <= end; ++i)
+        {
+            std::string expected = make_unique_value(i);
+            redisReply *reply = nullptr;
+            if (redisGetReply(c, (void **)&reply) != REDIS_OK || reply == nullptr)
+            {
+                printf("==> FAILED -> resp-get-unique[%d], no reply: %s\n", i, c->errstr);
+                redisFree(c);
+                exit(1);
+            }
+            // RESP GET returns a bulk string with the raw value (no trailing CRLF).
+            if (reply->type != REDIS_REPLY_STRING ||
+                reply->len != expected.size() ||
+                memcmp(reply->str, expected.c_str(), reply->len) != 0)
+            {
+                printf("==> FAILED -> resp-get-unique[%d], unexpected reply (type=%d)\n", i, reply->type);
+                freeReplyObject(reply);
+                redisFree(c);
+                exit(1);
+            }
+            freeReplyObject(reply);
+        }
+    }
+
+    redisFree(c);
+    printf("==> PASSED -> resp-get-unique (%d KV over RESP)\n", UNIQUE_KV_COUNT);
+}
+
+// SET the whole batch for `step` over RESP, each key carrying a 1s expiry (EX 1).
+static void resp_timer_set_batch(redisContext *c, int step)
+{
+    constexpr int BATCH_SIZE = 128;
+
+    for (int begin = 0; begin < TIMER_STEP_KV; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE, TIMER_STEP_KV);
+
+        for (int i = begin; i < end; ++i)
+        {
+            std::string key = make_timer_key(step, i);
+            std::string value = make_timer_value(step, i);
+            redisAppendCommand(c, "SET %s %s EX 1", key.c_str(), value.c_str());
+        }
+
+        for (int i = begin; i < end; ++i)
+        {
+            redisReply *reply = nullptr;
+            if (redisGetReply(c, (void **)&reply) != REDIS_OK || reply == nullptr)
+            {
+                printf("==> FAILED -> resp-timer-set step%d[%d], no reply\n", step, i);
+                redisFree(c);
+                exit(1);
+            }
+            if (reply->type != REDIS_REPLY_STATUS || strcmp(reply->str, "OK") != 0)
+            {
+                printf("==> FAILED -> resp-timer-set step%d[%d], unexpected reply (type=%d)\n", step, i, reply->type);
+                freeReplyObject(reply);
+                redisFree(c);
+                exit(1);
+            }
+            freeReplyObject(reply);
+        }
+    }
+}
+
+// GET the whole batch for `step` over RESP and assert every key has expired (nil).
+static void resp_timer_verify_expired(redisContext *c, int step)
+{
+    constexpr int BATCH_SIZE = 128;
+
+    for (int begin = 0; begin < TIMER_STEP_KV; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE, TIMER_STEP_KV);
+
+        for (int i = begin; i < end; ++i)
+        {
+            std::string key = make_timer_key(step, i);
+            redisAppendCommand(c, "GET %s", key.c_str());
+        }
+
+        for (int i = begin; i < end; ++i)
+        {
+            redisReply *reply = nullptr;
+            if (redisGetReply(c, (void **)&reply) != REDIS_OK || reply == nullptr)
+            {
+                printf("==> FAILED -> resp-timer-expired step%d[%d], no reply\n", step, i);
+                redisFree(c);
+                exit(1);
+            }
+            if (reply->type != REDIS_REPLY_NIL)
+            {
+                printf("==> FAILED -> resp-timer-expired step%d[%d], key not expired (type=%d)\n", step, i, reply->type);
+                freeReplyObject(reply);
+                redisFree(c);
+                exit(1);
+            }
+            freeReplyObject(reply);
+        }
+    }
+}
+
+// RESP mirror of testcase_timer_multi_step using SET ... EX 1 for expiration.
+void resp_testcase_timer_multi_step(const char *ip, uint16_t port)
+{
+    redisContext *c = resp_connect(ip, port);
+
+    resp_timer_set_batch(c, 0);
+    printf("resp-timer-multi-step: t0 SET %d KV (1s TTL)\n", TIMER_STEP_KV);
+
+    for (int step = 1; step <= TIMER_STEPS; ++step)
+    {
+        usleep(TIMER_STEP_INTERVAL_US);
+
+        resp_timer_verify_expired(c, step - 1);
+        resp_timer_set_batch(c, step);
+
+        printf("resp-timer-multi-step: T%d verified step %d expired + SET %d new KV\n",
+               step, step - 1, TIMER_STEP_KV);
+    }
+
+    redisFree(c);
+    printf("==> PASSED -> resp-timer-multi-step (%d steps, %d KV/step, 1s TTL, 1.5s spacing)\n",
+           TIMER_STEPS, TIMER_STEP_KV);
+}
+
 void array_testcase_1w(kv_client::KvClient &client, void (*func)(kv_client::KvClient &))
 {
 
@@ -304,8 +830,27 @@ int main(int argc, char **argv)
         return -1;
     }
     uint16_t port = atoi(argv[2]);
-    kv_client::KvClient client_ins(argv[1], port);
     int mode = atoi(argv[3]);
+
+    // Modes 10-12 exercise the RESP protocol path through hiredis and use their
+    // own client connection instead of the native KvClient.
+    if (mode == 10)
+    {
+        resp_testcase_set_unique(argv[1], port);
+        return 0;
+    }
+    else if (mode == 11)
+    {
+        resp_testcase_get_unique(argv[1], port);
+        return 0;
+    }
+    else if (mode == 12)
+    {
+        resp_testcase_timer_multi_step(argv[1], port);
+        return 0;
+    }
+
+    kv_client::KvClient client_ins(argv[1], port);
 
     if (client_ins.init() != 0)
     {
@@ -326,6 +871,16 @@ int main(int argc, char **argv)
         testcase_set(client_ins);
     else if (mode == 6)
         testcase_del(client_ins);
+    else if (mode == 7)
+        testcase_set_unique(client_ins);
+    else if (mode == 8)
+        testcase_get_unique(client_ins);
+    else if (mode == 9)
+        testcase_timer_multi_step(client_ins);
+    else if (mode == 14)
+        testcase_set_unique_first_half(client_ins);
+    else if (mode == 15)
+        testcase_set_unique_second_half(client_ins);
     else
     {
         perror("Invalid testcase number");

@@ -19,6 +19,9 @@ out/
 # data store binary
 *.dt
 data/
+rdb_data/
+benchmark_results/
+*.log
 
 # common binary names
 main

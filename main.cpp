@@ -14,6 +14,8 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <pthread.h>
+#include <thread>
 
 #define DEFAULT_PORT 8050
 
@@ -28,8 +30,10 @@ static void usage(const char *prog)
 {
     fprintf(stderr,
             "Usage:\n"
-            "  %s [--replicate]                       start as master (optionally enable replication)\n"
-            "  %s --slave <master_ip> <master_port>   start as slave syncing from master\n",
+            "  %s [--replicate] [--aof|--rdb]         start as master (persistence: --aof default, --rdb snapshot)\n"
+            "  %s --slave <master_ip> <master_port>   start as slave syncing from master\n"
+            "\n"
+            "  In --rdb mode, send SIGUSR1 (kill -USR1 <pid>) to take a snapshot.\n",
             prog, prog);
 }
 
@@ -49,6 +53,14 @@ int main(int argc, char *argv[])
         if (strcmp(argv[i], "--replicate") == 0)
         {
             replicate::g_replicate = true;
+        }
+        else if (strcmp(argv[i], "--rdb") == 0)
+        {
+            kv_persistent::g_persist_mode = kv_persistent::PersistMode::RDB;
+        }
+        else if (strcmp(argv[i], "--aof") == 0)
+        {
+            kv_persistent::g_persist_mode = kv_persistent::PersistMode::AOF;
         }
         else if (strcmp(argv[i], "--slave") == 0)
         {
@@ -71,6 +83,31 @@ int main(int argc, char *argv[])
 
     auto &prot = kv_protocal::KvStoreProtocal::instance();
     (void)prot;
+
+    // In RDB mode a snapshot is taken on demand: send SIGUSR1 (e.g. `kill -USR1 <pid>`)
+    // and a dedicated thread forks a child to dump the dataset via save().
+    if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::RDB)
+    {
+        signal(SIGCHLD, SIG_DFL); // allow waitpid() to reap the snapshot child
+        signal(SIGUSR1, SIG_DFL);
+
+        sigset_t save_set;
+        sigemptyset(&save_set);
+        sigaddset(&save_set, SIGUSR1);
+        pthread_sigmask(SIG_BLOCK, &save_set, nullptr);
+
+        std::thread(
+            [&prot]()
+            {
+                sigset_t wait_set;
+                sigemptyset(&wait_set);
+                sigaddset(&wait_set, SIGUSR1);
+                int sig = 0;
+                while (sigwait(&wait_set, &sig) == 0)
+                    prot.save();
+            })
+            .detach();
+    }
 
     if (is_slave)
     {

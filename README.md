@@ -280,11 +280,14 @@ Requests and responses can be **batched** — a single round trip may carry mult
 **Request framing**
 
 ```text
-NumHeader            { uint32 num_request }
+NumHeader            { uint8 tag, uint32 num_request }   // packed, 5 bytes
 HeaderInfo[ N ]      { uint32 command, uint32 key_length, uint32 body_length,
                        int sync_idx, TimeoutSpec timeout }
 Body[ N ]            key bytes followed by value bytes
 ```
+
+`tag` is a fixed sentinel (`NUM_HEADER_TAG`, never `'*'`) so the server can tell a
+native request from a Redis RESP command by peeking the first byte.
 
 **Commands** (`CommandIdx`):
 
@@ -348,8 +351,43 @@ A client-driven test harness is built as `kvstore_client_testcase`. Start a serv
 ./build/kvstore
 
 # Terminal 2
-./build/kvstore_client_testcase
+./build/kvstore_client_testcase <ip> <port> <test_mode>
 ```
+
+### Memory Profiling
+
+The server's memory footprint under different allocators was profiled with
+[memory_probe/mem_profile.sh](memory_probe/mem_profile.sh), which samples
+`/proc/<pid>/status`. Each run used a **Release** build of the default
+`REACTOR` + `RBTREE_ENGINE` server on port 8050 with the `data/` directory
+cleared beforehand, driven through the test harness:
+
+- **Peak / full set** — `kvstore_client_testcase <ip> 8050 5` inserts 500 000
+  keys, each with a 1 KB value (`testcase_set`).
+- **End / after DEL** — `kvstore_client_testcase <ip> 8050 6` deletes all
+  500 000 keys (`testcase_del`).
+
+Memory is reported as **virtual** (`VmSize`) and **physical / resident**
+(`VmRSS`), sampled just after the server binds (start), after the full set is
+loaded (peak), and after every key is deleted (end).
+
+| Allocator | Metric | Start (MB) | Peak / full set (MB) | End / after DEL (MB) |
+| --- | --- | --- | --- | --- |
+| No pool (glibc `malloc`) | Virtual (`VmSize`) | 94.48 | 653.52 | 653.52 |
+| No pool (glibc `malloc`) | Physical (`VmRSS`) | 91.43 | 650.82 | 650.82 |
+| Custom pool (`-DENABLE_MEMORY_POOL=ON`) | Virtual (`VmSize`) | 94.51 | 716.23 | 716.23 |
+| Custom pool (`-DENABLE_MEMORY_POOL=ON`) | Physical (`VmRSS`) | 91.53 | 713.50 | 713.51 |
+| tcmalloc (`-DENABLE_TCMALLOC=ON`) | Virtual (`VmSize`) | 105.21 | 724.21 | 724.21 |
+| tcmalloc (`-DENABLE_TCMALLOC=ON`) | Physical (`VmRSS`) | 99.50 | 721.40 | 721.40 |
+
+> After the full working set is deleted, none of the three allocators return the
+> freed physical pages to the OS — resident memory stays at its peak. glibc
+> `malloc` is the most compact; the custom pool (713 MB) and tcmalloc (721 MB)
+> land within ~10% of it. The custom pool uses **sub-octave size classes** — each
+> power-of-two octave is split into 8 evenly spaced classes (≤12.5% internal
+> fragmentation) — so a 1 KB value takes a 1152 B block instead of the 2048 B a
+> pure power-of-two scheme would use (which previously pushed its peak to
+> ~1132 MB).
 
 ---
 
