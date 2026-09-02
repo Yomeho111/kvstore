@@ -192,6 +192,8 @@ add_library(kvstore_core STATIC
     memory/central_pool.cpp
     memory/page_allocator.cpp
     memory/thread_cache.cpp
+    config/kv_config.cpp
+    logger/kv_log.cpp
     network/network_utils.cpp
     core_engine/rbtree_engine/rbtree_engine.cpp
     core_engine/array_engine/array_engine.cpp
@@ -217,6 +219,8 @@ target_include_directories(kvstore_core
         ${PROJECT_SOURCE_DIR}/network
         ${PROJECT_SOURCE_DIR}/protocal
         ${PROJECT_SOURCE_DIR}/persistent_core
+        ${PROJECT_SOURCE_DIR}/config
+        ${PROJECT_SOURCE_DIR}/logger
         ${PROJECT_SOURCE_DIR}/base_component/rbtree
         ${PROJECT_SOURCE_DIR}/base_component/array
         ${PROJECT_SOURCE_DIR}/base_component/hash

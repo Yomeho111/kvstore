@@ -7,6 +7,7 @@
 
 #include "allocator.h"
 #include "kv_protocal.hpp"
+#include "kv_log.h"
 #include "delta.skel.h"
 
 #include "delta.h"
@@ -18,14 +19,15 @@ static int rdma_wait_cm_event(struct rdma_event_channel *channel, enum rdma_cm_e
     struct rdma_cm_event *event;
     if (0 != rdma_get_cm_event(channel, &event))
     {
-        perror("rdma_get_cm_event");
+        KV_ERROR("rdma_get_cm_event: %s", strerror(errno));
         return -1;
     }
 
     if (event->event != expect)
     { // failed
 
-        fprintf(stderr, "unexpect RDMA CM event %s, expected = %s\n", rdma_event_str(event->event), rdma_event_str(expect));
+        KV_ERROR("unexpected RDMA CM event %s, expected %s",
+                 rdma_event_str(event->event), rdma_event_str(expect));
         ret = -1;
         goto finished;
     }
@@ -47,14 +49,14 @@ static int rdma_create_queuepair(struct rdma_cm_id *id, struct ibv_pd **pd, stru
     *pd = ibv_alloc_pd(id->verbs);
     if (NULL == *pd)
     {
-        perror("ibv_alloc_pd");
+        KV_ERROR("ibv_alloc_pd: %s", strerror(errno));
         return -1;
     }
 
     *cq = ibv_create_cq(id->verbs, RDMA_CQ_DEPTH, NULL, NULL, 0);
     if (NULL == *cq)
     {
-        perror("ibv_create_cq");
+        KV_ERROR("ibv_create_cq: %s", strerror(errno));
         return -1;
     }
 
@@ -143,7 +145,7 @@ static int rdma_post_recv(struct rdma_cm_id *cm_id)
 
     int ret = ibv_post_recv(cm_id->qp, &wr, &bad);
     if (ret)
-        fprintf(stderr, "ibv_post_recv: %s\n", strerror(ret));
+        KV_ERROR("ibv_post_recv: %s", strerror(ret));
 
     return ret;
 }
@@ -155,8 +157,8 @@ static int rdma_post_send(struct rdma_cm_id *cm_id, size_t length)
 
     if (length > cm->sbuff_size)
     {
-        fprintf(stderr, "ibv_post_send: %zu bytes exceed the %zu byte send buffer\n",
-                length, cm->sbuff_size);
+        KV_ERROR("ibv_post_send: %zu bytes exceed the %zu byte send buffer",
+                 length, cm->sbuff_size);
         return -1;
     }
 
@@ -176,7 +178,7 @@ static int rdma_post_send(struct rdma_cm_id *cm_id, size_t length)
 
     int ret = ibv_post_send(cm_id->qp, &wr, &bad);
     if (ret)
-        fprintf(stderr, "ibv_post_send: %s\n", strerror(ret));
+        KV_ERROR("ibv_post_send: %s", strerror(ret));
 
     return ret;
 }
@@ -201,8 +203,8 @@ static int rdma_poll_wc(struct ibv_cq *cq, struct ibv_wc *out)
 
         if (wc.status != IBV_WC_SUCCESS)
         {
-            fprintf(stderr, "work completion failed: %s (opcode %d, vendor_err 0x%x)\n",
-                    ibv_wc_status_str(wc.status), (int)wc.opcode, wc.vendor_err);
+            KV_ERROR("work completion failed: %s (opcode %d, vendor_err 0x%x)",
+                     ibv_wc_status_str(wc.status), (int)wc.opcode, wc.vendor_err);
             return -1;
         }
         if (out)
@@ -266,7 +268,7 @@ namespace replicate
         static int ret = ds_obj.init();
         if (ret < 0)
         {
-            fprintf(stderr, "bad delta server\n");
+            KV_ERROR("bad delta server");
             exit(0);
         }
         return ds_obj;
@@ -379,9 +381,7 @@ namespace replicate
 
         if (!binary_path || strnlen(binary_path, PATH_MAX) == 0)
         {
-            fprintf(
-                stderr,
-                "KVTracer: failed to resolve /proc/self/exe\n");
+            KV_ERROR("KVTracer: failed to resolve /proc/self/exe");
 
             if (binary_path)
                 allocator::kv_free(binary_path);
@@ -398,9 +398,7 @@ namespace replicate
 
         if (!skel_)
         {
-            fprintf(
-                stderr,
-                "KVTracer: delta_bpf__open() failed\n");
+            KV_ERROR("KVTracer: delta_bpf__open() failed");
 
             goto fail;
         }
@@ -412,9 +410,7 @@ namespace replicate
          */
         if (delta_bpf__load(skel_) != 0)
         {
-            fprintf(
-                stderr,
-                "KVTracer: delta_bpf__load() failed\n");
+            KV_ERROR("KVTracer: delta_bpf__load() failed (needs CAP_BPF/CAP_PERFMON)");
 
             goto fail;
         }
@@ -466,12 +462,10 @@ namespace replicate
 
             if (!uprobe_link_)
             {
-                fprintf(
-                    stderr,
-                    "KVTracer: failed to attach uprobe "
-                    "to %s:kv_replication_commit: %s\n",
-                    binary_path,
-                    strerror(errno));
+                KV_ERROR("KVTracer: failed to attach uprobe to %s:%s: %s (needs CAP_SYS_ADMIN)",
+                         binary_path,
+                         STRINGIFY(COMMIT_FUNC),
+                         strerror(errno));
 
                 goto fail;
             }
@@ -496,10 +490,7 @@ namespace replicate
 
         if (!rb_)
         {
-            fprintf(
-                stderr,
-                "KVTracer: ring_buffer__new() failed: %s\n",
-                strerror(errno));
+            KV_ERROR("KVTracer: ring_buffer__new() failed: %s", strerror(errno));
 
             goto fail;
         }
@@ -526,9 +517,7 @@ namespace replicate
     {
         if (!initialized_.load(std::memory_order_acquire))
         {
-            fprintf(
-                stderr,
-                "KVTracer: start() called before init()\n");
+            KV_ERROR("KVTracer: start() called before init()");
 
             return -1;
         }
@@ -644,7 +633,7 @@ namespace replicate
 
             if (err < 0)
             {
-                fprintf(stderr, "Error polling perf buffer: %d\n", err);
+                KV_ERROR("error polling the delta ring buffer: %d", err);
                 break;
             }
         }
@@ -688,12 +677,9 @@ namespace replicate
 
         if (data_sz < sizeof(DeltaEvent))
         {
-            fprintf(
-                stderr,
-                "DeltaSyncObject: invalid event size: "
-                "got=%zu expected=%zu\n",
-                data_sz,
-                sizeof(DeltaEvent));
+            KV_ERROR("DeltaSyncObject: invalid event size: got=%zu expected=%zu",
+                     data_sz,
+                     sizeof(DeltaEvent));
 
             return -1;
         }
@@ -726,7 +712,7 @@ namespace replicate
         static int ret = server.init();
         if (ret < 0)
         {
-            fprintf(stderr, "bad master server\n");
+            KV_ERROR("bad master server");
             exit(0);
         }
         return server;
@@ -747,13 +733,13 @@ namespace replicate
         channel_ = rdma_create_event_channel();
         if (!channel_)
         {
-            perror("rdma_create_event_channel\n");
+            KV_ERROR("rdma_create_event_channel: %s", strerror(errno));
             return -3;
         }
 
         if (0 != rdma_create_id(channel_, &cm_listen_id_, NULL, RDMA_PS_TCP))
         {
-            perror("rdma_create_id\n");
+            KV_ERROR("rdma_create_id: %s", strerror(errno));
             return -3;
         }
 
@@ -764,7 +750,7 @@ namespace replicate
         server_addr.sin_port = htons(RDMA_SERVER_PORT);
         if (0 != rdma_bind_addr(cm_listen_id_, (struct sockaddr *)&server_addr))
         {
-            perror("rdma_bind_addr\n");
+            KV_ERROR("rdma_bind_addr on port %d: %s", RDMA_SERVER_PORT, strerror(errno));
             return -3;
         }
         return 0;
@@ -774,7 +760,7 @@ namespace replicate
     {
         if (0 != rdma_listen(cm_listen_id_, 10))
         {
-            perror("rdma_listen\n");
+            KV_ERROR("rdma_listen: %s", strerror(errno));
             return -3;
         }
 
@@ -783,9 +769,11 @@ namespace replicate
         cm_client_id_ = event->id;
         rdma_ack_cm_event(event);
 
+        KV_INFO("replica connected over RDMA");
+
         if (0 != rdma_create_queuepair(cm_client_id_, &pd_, &cq_))
         {
-            perror("rdma_create_queuepair");
+            KV_ERROR("rdma_create_queuepair: %s", strerror(errno));
             return -3;
         }
 
@@ -805,7 +793,7 @@ namespace replicate
 
         if (0 != rdma_accept(cm_client_id_, &param))
         {
-            perror("rdma_accept");
+            KV_ERROR("rdma_accept: %s", strerror(errno));
             return -3;
         }
 
@@ -830,7 +818,7 @@ namespace replicate
 
         if (buffer_size > cm->sbuff_size - sizeof(struct packet_info))
         {
-            fprintf(stderr, "sync payload of %zu bytes exceeds the send buffer\n", buffer_size);
+            KV_ERROR("sync payload of %zu bytes exceeds the send buffer", buffer_size);
             return -1;
         }
 
@@ -965,7 +953,7 @@ namespace replicate
         static int ret = slave.init();
         if (ret < 0)
         {
-            fprintf(stderr, "bad slave server\n");
+            KV_ERROR("bad slave server");
             exit(0);
         }
         return slave;
@@ -986,13 +974,13 @@ namespace replicate
         channel_ = rdma_create_event_channel();
         if (!channel_)
         {
-            perror("rdma_create_event_channel\n");
+            KV_ERROR("rdma_create_event_channel: %s", strerror(errno));
             return -3;
         }
 
         if (0 != rdma_create_id(channel_, &cm_id_, NULL, RDMA_PS_TCP))
         {
-            perror("rdma_create_id\n");
+            KV_ERROR("rdma_create_id: %s", strerror(errno));
             return -3;
         }
 
@@ -1002,13 +990,16 @@ namespace replicate
         dst_addr.sin_port = htons(port_);
         if (1 != inet_pton(AF_INET, ip_, &dst_addr.sin_addr))
         {
-            perror("inet_pton");
+            KV_ERROR("'%s' is not a valid IPv4 address", ip_ ? ip_ : "");
             return 0;
         }
 
+        KV_INFO("connecting to master at %s:%u over RDMA", ip_, (unsigned)port_);
+
         if (0 != rdma_resolve_addr(cm_id_, NULL, (struct sockaddr *)&dst_addr, RDMA_TIMEOUT_MS))
         {
-            perror("rdma_resolve_addr");
+            KV_ERROR("rdma_resolve_addr %s: %s (the address must be on an RDMA netdev)",
+                     ip_, strerror(errno));
             return 0;
         }
 
@@ -1016,14 +1007,14 @@ namespace replicate
 
         if (0 != rdma_resolve_route(cm_id_, RDMA_TIMEOUT_MS))
         {
-            perror("rdma_resolve_route");
+            KV_ERROR("rdma_resolve_route: %s", strerror(errno));
             return 0;
         }
         rdma_wait_cm_event(channel_, RDMA_CM_EVENT_ROUTE_RESOLVED, NULL);
 
         if (0 != rdma_create_queuepair(cm_id_, &pd_, &cq_))
         {
-            perror("rdma_create_queuepair");
+            KV_ERROR("rdma_create_queuepair: %s", strerror(errno));
             return 0;
         }
 
@@ -1042,7 +1033,7 @@ namespace replicate
 
         if (0 != rdma_connect(cm_id_, &param))
         {
-            perror("rdma_connect");
+            KV_ERROR("rdma_connect: %s", strerror(errno));
             return -1;
         }
 
@@ -1093,7 +1084,7 @@ namespace replicate
             int ret = _recv();
             if (ret < 0)
             {
-                fprintf(stderr, "replica stopped receiving from the master: %d\n", ret);
+                KV_ERROR("replica stopped receiving from the master: %d", ret);
                 return;
             }
 

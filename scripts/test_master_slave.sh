@@ -37,6 +37,7 @@ SIW_LINK=${SIW_LINK:-siw0}
 BUILD_JOBS=${BUILD_JOBS:-$(nproc)}
 SYNC_TIMEOUT=${SYNC_TIMEOUT:-180}
 SYNC_QUIET_TENTHS=${SYNC_QUIET_TENTHS:-20}
+LOG_LEVEL=${LOG_LEVEL:-info}
 BUILD_DIR_NAME=build-replication-test
 COPY_MARKER=.kvstore-replication-test-copy
 
@@ -338,6 +339,27 @@ run_client_mode()
     "$client" "$CLIENT_IP" "$CLIENT_PORT" "$mode"
 }
 
+# The server is configured entirely through an .ini file; there are no flags.
+write_config()
+{
+    local path=$1
+    local role=$2
+
+    {
+        printf '[server]\n'
+        printf 'port = %s\n' "$CLIENT_PORT"
+        printf 'log_level = %s\n' "$LOG_LEVEL"
+        printf '\n[persistence]\n'
+        printf 'mode = aof\n'
+        printf '\n[replication]\n'
+        printf 'role = %s\n' "$role"
+        if [[ $role == slave ]]; then
+            printf 'master_ip = %s\n' "$MASTER_IP"
+            printf 'master_port = %s\n' "$RDMA_PORT"
+        fi
+    } >"$path"
+}
+
 clean_artifacts()
 {
     log "Removing generated test artifacts"
@@ -408,9 +430,10 @@ fi
 
 log "Starting master from $MASTER_REPO"
 SERVERS_STARTED=1
+write_config "$MASTER_RUNTIME/kvstore.ini" master
 (
     cd "$MASTER_RUNTIME"
-    exec "$MASTER_BUILD/kvstore" --replicate --aof
+    exec "$MASTER_BUILD/kvstore" kvstore.ini
 ) >"$MASTER_RUNTIME/master.log" 2>&1 &
 MASTER_PID=$!
 wait_for_tcp "$CLIENT_IP" "$CLIENT_PORT" "$MASTER_PID" "master" "$MASTER_RUNTIME/master.log"
@@ -421,9 +444,10 @@ FIRST_PHASE_BYTES=$(aof_bytes "$MASTER_RUNTIME/data")
 ((FIRST_PHASE_BYTES > 0)) || die "master AOF is empty after the first write phase"
 
 log "Starting replica from $SLAVE_REPO (RDMA $MASTER_IP:$RDMA_PORT)"
+write_config "$SLAVE_RUNTIME/kvstore.ini" slave
 (
     cd "$SLAVE_RUNTIME"
-    exec "$SLAVE_BIN/kvstore" --slave "$MASTER_IP" "$RDMA_PORT" --aof
+    exec "$SLAVE_BIN/kvstore" kvstore.ini
 ) >"$SLAVE_RUNTIME/slave.log" 2>&1 &
 SLAVE_PID=$!
 
@@ -444,9 +468,10 @@ stop_process "$MASTER_PID" "master"
 MASTER_PID=
 
 log "Promoting and restarting the replica as a standalone server"
+write_config "$SLAVE_RUNTIME/kvstore.ini" standalone
 (
     cd "$SLAVE_RUNTIME"
-    exec "$SLAVE_BIN/kvstore" --aof
+    exec "$SLAVE_BIN/kvstore" kvstore.ini
 ) >"$SLAVE_RUNTIME/promoted.log" 2>&1 &
 PROMOTED_PID=$!
 wait_for_tcp "$CLIENT_IP" "$CLIENT_PORT" "$PROMOTED_PID" "promoted replica" "$SLAVE_RUNTIME/promoted.log"
