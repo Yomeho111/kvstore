@@ -274,7 +274,7 @@ void testcase_del(kv_client::KvClient &client)
     }
 }
 
-constexpr int UNIQUE_KV_COUNT = 1000;
+constexpr int UNIQUE_KV_COUNT = 100000;
 
 static std::string make_unique_key(int i)
 {

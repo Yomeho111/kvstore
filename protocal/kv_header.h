@@ -68,7 +68,6 @@ namespace kv_protocal
         uint32_t command{0};
         uint32_t key_length{0};
         uint32_t body_length{0};
-        int sync_idx{-1};
         struct TimeoutSpec timeout;
     };
 

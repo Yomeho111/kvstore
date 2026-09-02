@@ -179,39 +179,59 @@ After building, the following executables are produced in `build/`:
 
 ## Running the Server
 
-The server listens on a base port of **8050** (and the following `KVSTORE_PORT_NUM` ports).
-Persistent data is written to a `data/` directory in the current working directory.
-
-### Standalone (Master)
+The server is configured entirely through an INI file. There are no command-line
+settings beyond pointing at that file:
 
 ```bash
-./build/kvstore
+./build/kvstore /path/to/kvstore.ini            # positional
+./build/kvstore --config /path/to/kvstore.ini   # explicit form of the same thing
+./build/kvstore                                 # falls back to ./kvstore.ini
 ```
 
-### Master with Replication
+Persistent data is written to a `data/` directory in the current working directory,
+so run each node from its own directory.
 
-Enable replication so slaves can sync from this node:
+### Configuration file
 
-```bash
-./build/kvstore --replicate
+[`kvstore.ini`](kvstore.ini) in the repository root is a documented template.
+
+```ini
+[server]
+port      = 8050     ; base port; the next KVSTORE_PORT_NUM - 1 ports are also bound
+log_level = info     ; error | warn | info | debug
+
+[persistence]
+mode = aof           ; aof (append-only log) | rdb (snapshot on SIGUSR1)
+
+[replication]
+role        = standalone   ; standalone | master | slave
+master_ip   = 10.0.0.4     ; required when role = slave
+master_port = 20000        ; the master's RDMA port
 ```
 
-### Slave / Replica
+| Section | Key | Default | Notes |
+| --- | --- | --- | --- |
+| `server` | `port` | `8050` | Base listening port. |
+| `server` | `log_level` | `info` | `error`, `warn`, `info` or `debug`. |
+| `persistence` | `mode` | `aof` | `aof` or `rdb`. |
+| `replication` | `role` | `standalone` | `standalone`, `master` or `slave`. |
+| `replication` | `master_ip` | — | Required when `role = slave`. Must be an address on an RDMA-capable interface. |
+| `replication` | `master_port` | `20000` | The master's RDMA port. |
 
-Start a node that syncs from a master. A slave always tracks updates locally so it can be
-promoted later:
+Unknown sections, unknown keys and invalid values are rejected at startup rather than
+ignored, so a typo cannot silently start the node in the wrong replication role.
 
-```bash
-./build/kvstore --slave <master_ip> <master_port>
-```
+### Roles
 
-Usage summary:
+- **`standalone`** — serves clients, no replication.
+- **`master`** — additionally accepts one replica over RDMA and streams updates to it.
+- **`slave`** — connects to `master_ip:master_port` and applies what the master sends.
+  A slave also tracks updates locally, so it can be promoted later by restarting it
+  with `role = standalone`.
 
-```text
-Usage:
-  kvstore [--replicate]                       start as master (optionally enable replication)
-  kvstore --slave <master_ip> <master_port>   start as slave syncing from master
-```
+Replication requires an RDMA device, and the eBPF delta tracer needs
+`CAP_BPF`, `CAP_PERFMON` and `CAP_SYS_ADMIN` (see
+[`scripts/test_master_slave.sh`](scripts/test_master_slave.sh)).
 
 ---
 
