@@ -3,11 +3,12 @@
 # Automated kvstore test suite.
 #
 # Usage:
-#   test_suite.sh [aof|rdb|timer|pressure|all] [--no-build] [extra pressure_test.sh args...]
+#   test_suite.sh [aof|rdb|timer|batch|pressure|all] [--no-build] [extra pressure_test.sh args...]
 #
 #   aof        insert 100k keys, crash the server, restart, verify the AOF replay
 #   rdb        insert 100k keys, snapshot via SIGUSR1, crash, restart, verify the snapshot
 #   timer      set batches with a 1s TTL over several steps, verify each batch expires
+#   batch      replay the 13 KiB SET/GET/MOD/DEL batch 10k times and check every reply
 #   pressure   run scripts/pressure_test.sh and print a throughput summary
 #   all        all of the above (default)
 #
@@ -383,6 +384,39 @@ test_timer()
     pass "$name"
 }
 
+# Mode 3 replays the 9-request 13 KiB batch 10k times and compares every reply.
+# Persistence is off: 90k large records would write over a gigabyte of AOF for a
+# test that only exercises the batch protocol path.
+test_batch()
+{
+    local name="batch protocol (10k x 13 KiB batches)"
+    local runtime
+    new_runtime batch
+    runtime=$CURRENT_RUNTIME
+    write_config "$runtime" none
+
+    if ! start_server "$runtime" server.log; then
+        fail "$name (server did not start)"
+        drop_runtime
+        return
+    fi
+
+    if ! "$TESTCASE" "$HOST" "$PORT" 3 >"$runtime/batch.log" 2>&1; then
+        show_log_tail "$runtime/batch.log"
+        fail "$name (a batch reply did not match)"
+        kill_server KILL
+        drop_runtime
+        return
+    fi
+
+    local summary
+    summary=$(awk -F'qps: ' '/qps:/ { print $2 }' "$runtime/batch.log" | tail -n 1)
+
+    kill_server KILL
+    drop_runtime
+    pass "$name${summary:+ (${summary} ops/s)}"
+}
+
 print_pressure_metrics()
 {
     local log=$1
@@ -482,7 +516,7 @@ PRESSURE_ARGS=()
 # `-n 50000` survive. `--` forces the switch explicitly.
 while (($# > 0)); do
     case "$1" in
-        aof | rdb | timer | pressure | all)
+        aof | rdb | timer | batch | pressure | all)
             if ((SELECTED_SET == 1)); then
                 usage >&2
                 die "more than one test selected: '$SELECTED' and '$1'"
@@ -524,11 +558,13 @@ case "$SELECTED" in
     aof) test_aof ;;
     rdb) test_rdb ;;
     timer) test_timer ;;
+    batch) test_batch ;;
     pressure) test_pressure ;;
     all)
         test_aof
         test_rdb
         test_timer
+        test_batch
         test_pressure
         ;;
 esac
