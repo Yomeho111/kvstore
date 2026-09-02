@@ -62,6 +62,8 @@ namespace kv_config
                 out = kv_persistent::PersistMode::AOF;
             else if (text == "rdb")
                 out = kv_persistent::PersistMode::RDB;
+            else if (text == "none" || text == "off")
+                out = kv_persistent::PersistMode::NONE;
             else
                 return false;
             return true;
@@ -84,7 +86,16 @@ namespace kv_config
 
     const char *persist_mode_name(kv_persistent::PersistMode mode)
     {
-        return mode == kv_persistent::PersistMode::RDB ? "rdb" : "aof";
+        switch (mode)
+        {
+            case kv_persistent::PersistMode::NONE:
+                return "none";
+            case kv_persistent::PersistMode::AOF:
+                return "aof";
+            case kv_persistent::PersistMode::RDB:
+                return "rdb";
+        }
+        return "unknown";
     }
 
     int load(const char *path, Config &out)

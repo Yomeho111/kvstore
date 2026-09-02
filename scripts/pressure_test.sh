@@ -36,6 +36,7 @@ HOST=${HOST:-127.0.0.1}
 PORT=${PORT:-8050}
 REQUESTS=${REQUESTS:-1000000}      # -n for the headline run
 SWEEP_REQUESTS=${SWEEP_REQUESTS:-200000}  # -n for each sweep point
+LATENCY_REQUESTS=${LATENCY_REQUESTS:-50000}  # -n for the single-client latency runs
 CLIENTS=${CLIENTS:-64}             # -c
 PIPELINE=${PIPELINE:-16}           # -P
 DATASIZE=${DATASIZE:-128}          # -d (SET payload bytes)
@@ -168,13 +169,13 @@ run "Warm-up: populate ${KEYSPACE} keys" \
 #    inline PING that "-t ping" also emits.
 # --------------------------------------------------------------------------- #
 run "PING latency (c=1, P=1)" \
-    "${BASE[@]}" -n 50000 -c 1 -P 1 PING
+    "${BASE[@]}" -n "$LATENCY_REQUESTS" -c 1 -P 1 PING
 
 # --------------------------------------------------------------------------- #
 # 2. Single-op SET/GET latency (single client, no pipeline).
 # --------------------------------------------------------------------------- #
 run "SET/GET latency baseline (c=1, P=1)" \
-    "${BASE[@]}" -n 50000 -c 1 -P 1 -d "$DATASIZE" -r "$KEYSPACE" -t set,get -q
+    "${BASE[@]}" -n "$LATENCY_REQUESTS" -c 1 -P 1 -d "$DATASIZE" -r "$KEYSPACE" -t set,get -q
 
 # --------------------------------------------------------------------------- #
 # 3. Headline throughput (your heavy run).

@@ -201,7 +201,7 @@ port      = 8050     ; base port; the next KVSTORE_PORT_NUM - 1 ports are also b
 log_level = info     ; error | warn | info | debug
 
 [persistence]
-mode = aof           ; aof (append-only log) | rdb (snapshot on SIGUSR1)
+mode = none          ; none (in-memory only) | aof (append-only log) | rdb (snapshot on SIGUSR1)
 
 [replication]
 role        = standalone   ; standalone | master | slave
@@ -213,7 +213,7 @@ master_port = 20000        ; the master's RDMA port
 | --- | --- | --- | --- |
 | `server` | `port` | `8050` | Base listening port. |
 | `server` | `log_level` | `info` | `error`, `warn`, `info` or `debug`. |
-| `persistence` | `mode` | `aof` | `aof` or `rdb`. |
+| `persistence` | `mode` | `none` | `none`, `aof` or `rdb`. `none` keeps everything in memory: nothing is loaded at startup and nothing is written to disk. |
 | `replication` | `role` | `standalone` | `standalone`, `master` or `slave`. |
 | `replication` | `master_ip` | — | Required when `role = slave`. Must be an address on an RDMA-capable interface. |
 | `replication` | `master_port` | `20000` | The master's RDMA port. |

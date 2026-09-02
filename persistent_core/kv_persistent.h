@@ -20,12 +20,13 @@ namespace kv_persistent
     // Which persistence strategy the server uses. Selected once at startup.
     enum class PersistMode
     {
+        NONE, // in-memory only: nothing is loaded at startup, nothing is written
         AOF,
         RDB,
     };
 
-    // Global persistence mode, defaults to AOF (append-only log). Set from main().
-    inline PersistMode g_persist_mode = PersistMode::AOF;
+    // Global persistence mode, defaults to in-memory only. Set from main().
+    inline PersistMode g_persist_mode = PersistMode::NONE;
 
     class StoreEngine
     {

@@ -17,7 +17,8 @@
 # in its own directory under .test-suite/ which is deleted afterwards, so no
 # persistent database is carried between tests. The build tree is never removed.
 #
-# Overrides: BUILD_DIR, PORT, HOST, PRESSURE_PERSIST (aof|rdb), KEEP_LOGS=1
+# Overrides: BUILD_DIR, PORT, HOST, PRESSURE_PERSIST (aof|rdb), KEEP_LOGS=1,
+#            REQUESTS, SWEEP_REQUESTS, LATENCY_REQUESTS (pressure request counts)
 
 set -Eeuo pipefail
 
@@ -430,7 +431,13 @@ test_pressure()
     log "Running pressure test (persistence=$PRESSURE_PERSIST, output muted)..."
 
     local status=0
-    "$SCRIPT_DIR/pressure_test.sh" -h "$HOST" -p "$PORT" --no-save "${PRESSURE_ARGS[@]}" \
+    # Half the standalone request counts: here the benchmark is a regression
+    # gate, not a full characterisation run. Flags in PRESSURE_ARGS still win,
+    # because pressure_test.sh parses them after reading the environment.
+    REQUESTS=${REQUESTS:-500000} \
+        SWEEP_REQUESTS=${SWEEP_REQUESTS:-100000} \
+        LATENCY_REQUESTS=${LATENCY_REQUESTS:-20000} \
+        "$SCRIPT_DIR/pressure_test.sh" -h "$HOST" -p "$PORT" --no-save "${PRESSURE_ARGS[@]}" \
         >"$runtime/pressure.log" 2>&1 || status=$?
 
     if ((status != 0)); then

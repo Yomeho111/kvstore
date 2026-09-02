@@ -49,6 +49,8 @@ SYNC_QUIET_TENTHS=${SYNC_QUIET_TENTHS:-20}
 LOG_LEVEL=${LOG_LEVEL:-info}
 BUILD_DIR_NAME=build-replication-test
 COPY_MARKER=.kvstore-replication-test-copy
+# RDMA_BUFFER_SIZE (replicate/rdma.h) is 128 MiB and gets pinned by ibv_reg_mr.
+RDMA_LOCKED_KIB=131072
 
 MASTER_BUILD=$(readlink -m -- "${BUILD_DIR:-$MASTER_REPO/$BUILD_DIR_NAME}")
 SLAVE_BIN="$SLAVE_REPO/bin"
@@ -462,9 +464,14 @@ install_slave_binaries
 rm -rf -- "$MASTER_RUNTIME" "$SLAVE_RUNTIME"
 mkdir -p -- "$MASTER_RUNTIME" "$SLAVE_RUNTIME"
 
+# Raising the hard limit needs privileges, so a failure here is only a problem
+# when what we are left with cannot cover the 128 MiB RDMA buffers.
 if ! ulimit -l unlimited 2>/dev/null; then
-    printf 'WARN: locked-memory limit is %s KiB; RDMA registration may require at least 131072 KiB\n' \
-        "$(ulimit -l)" >&2
+    locked_kib=$(ulimit -l)
+    if [[ $locked_kib != unlimited ]] && ((locked_kib < RDMA_LOCKED_KIB)); then
+        printf 'WARN: locked-memory limit is %s KiB; RDMA registration requires at least %s KiB\n' \
+            "$locked_kib" "$RDMA_LOCKED_KIB" >&2
+    fi
 fi
 
 log "Starting master from $MASTER_REPO"
