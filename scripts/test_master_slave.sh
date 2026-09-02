@@ -4,7 +4,16 @@
 #
 # Usage:
 #   test_master_slave.sh            run the test
+#   test_master_slave.sh --no-build reuse the binaries already in BUILD_DIR
 #   test_master_slave.sh --clean    delete everything the test generates, then exit
+#
+# On success the generated artifacts below are removed automatically; the
+# persistent databases are cleared even when the test fails. Everything else is
+# kept on failure so the server logs can be inspected. Set KEEP_ARTIFACTS=1 to
+# keep it all (and to skip the rebuild next run).
+#
+# A build directory supplied through BUILD_DIR, or reused via --no-build, is
+# never deleted: it belongs to the caller.
 #
 # Generated artifacts (nothing here is source):
 #   <repo>/build-replication-test/  the single build tree (the replica reuses it)
@@ -41,7 +50,7 @@ LOG_LEVEL=${LOG_LEVEL:-info}
 BUILD_DIR_NAME=build-replication-test
 COPY_MARKER=.kvstore-replication-test-copy
 
-MASTER_BUILD="$MASTER_REPO/$BUILD_DIR_NAME"
+MASTER_BUILD=$(readlink -m -- "${BUILD_DIR:-$MASTER_REPO/$BUILD_DIR_NAME}")
 SLAVE_BIN="$SLAVE_REPO/bin"
 MASTER_RUNTIME="$MASTER_REPO/.replication-test/master"
 SLAVE_RUNTIME="$SLAVE_REPO/.replication-test/slave"
@@ -53,6 +62,12 @@ MASTER_PID=
 SLAVE_PID=
 PROMOTED_PID=
 SERVERS_STARTED=0
+AUTO_CLEAN=0
+NO_BUILD=0
+
+# A caller-supplied build directory is never removed by clean_artifacts.
+OWNS_BUILD=1
+[[ -n "${BUILD_DIR:-}" ]] && OWNS_BUILD=0
 
 log()
 {
@@ -115,6 +130,15 @@ cleanup()
         show_log_tail "$MASTER_RUNTIME/master.log" "master.log"
         show_log_tail "$SLAVE_RUNTIME/slave.log" "slave.log"
         show_log_tail "$SLAVE_RUNTIME/promoted.log" "promoted.log"
+    fi
+
+    # Only on success: a failed run's artifacts are the evidence.
+    if ((status == 0 && AUTO_CLEAN == 1)) && [[ "${KEEP_ARTIFACTS:-0}" != 1 ]]; then
+        clean_artifacts
+    elif ((AUTO_CLEAN == 1)) && [[ "${KEEP_ARTIFACTS:-0}" != 1 ]]; then
+        # Drop the databases even on failure; the logs and configs stay put.
+        rm -rf -- "$MASTER_RUNTIME/data" "$MASTER_RUNTIME/rdb_data" \
+            "$SLAVE_RUNTIME/data" "$SLAVE_RUNTIME/rdb_data"
     fi
 
     exit "$status"
@@ -215,6 +239,13 @@ prepare_slave_dir()
 
 build_kvstore()
 {
+    if ((NO_BUILD == 1)); then
+        [[ -x "$MASTER_BUILD/kvstore" && -x "$MASTER_BUILD/kvstore_client_testcase" ]] ||
+            die "--no-build was given but $MASTER_BUILD does not contain kvstore and kvstore_client_testcase"
+        log "Reusing the existing build in $MASTER_BUILD"
+        return
+    fi
+
     log "Configuring and building kvstore"
     cmake -S "$MASTER_REPO" -B "$MASTER_BUILD" \
         -DCMAKE_BUILD_TYPE=Release \
@@ -222,7 +253,6 @@ build_kvstore()
         -DKVSTORE_PORT_NUM=1 \
         -DENABLE_MEMORY_POOL=ON
     cmake --build "$MASTER_BUILD" -j "$BUILD_JOBS"
-    grant_capabilities "$MASTER_BUILD/kvstore"
 }
 
 # The replica runs the very same build as the master, so only the executables are
@@ -375,8 +405,9 @@ clean_artifacts()
         removed=1
     }
 
-    remove_path "$MASTER_BUILD"
     remove_path "$MASTER_ARTIFACTS"
+
+    ((OWNS_BUILD == 1)) && remove_path "$MASTER_BUILD"
 
     if [[ -f "$SLAVE_REPO/$COPY_MARKER" ]]; then
         remove_path "$SLAVE_REPO"
@@ -392,8 +423,9 @@ clean_artifacts()
 
 usage()
 {
-    printf 'Usage: %s [--clean]\n\n' "${BASH_SOURCE[0]##*/}"
-    printf '  (no arguments)  run the end-to-end replication test\n'
+    printf 'Usage: %s [--no-build|--clean]\n\n' "${BASH_SOURCE[0]##*/}"
+    printf '  (no arguments)  build, then run the end-to-end replication test\n'
+    printf '  --no-build      run the test against the binaries already in BUILD_DIR\n'
     printf '  --clean         delete the build trees, runtime data and replica copy, then exit\n'
 }
 
@@ -402,7 +434,12 @@ case "${1:-}" in
         clean_artifacts
         exit 0
         ;;
-    "") ;;
+    "") AUTO_CLEAN=1 ;;
+    --no-build)
+        NO_BUILD=1
+        OWNS_BUILD=0
+        AUTO_CLEAN=1
+        ;;
     -h | --help)
         usage
         exit 0
@@ -418,6 +455,8 @@ require_free_tcp_port "$RDMA_PORT"
 resolve_master_ip
 prepare_slave_dir
 build_kvstore
+# setcap is cleared by every relink, and a reused build may never have had it.
+grant_capabilities "$MASTER_BUILD/kvstore"
 install_slave_binaries
 
 rm -rf -- "$MASTER_RUNTIME" "$SLAVE_RUNTIME"

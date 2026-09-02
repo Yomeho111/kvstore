@@ -7,6 +7,9 @@ out/
 # replication test artifacts (see scripts/test_master_slave.sh --clean)
 .replication-test/
 
+# test suite runtime dirs (see scripts/test_suite.sh)
+.test-suite/
+
 # object / library files
 *.o
 *.obj
