@@ -7,7 +7,7 @@
 #endif
 
 #include "kv_protocal.hpp"
-#include "rep_manager.h"
+#include "replicate.h"
 
 #include <signal.h>
 #include <stdlib.h>
@@ -22,8 +22,10 @@
 void handler(int sig)
 {
     const char msg[] = "Close the server\n";
-    write(STDOUT_FILENO, msg, sizeof(msg) - 1);
-    exit(sig);
+    (void)!write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+    // _exit() is async-signal-safe, and it skips the static destructors that join
+    // the replication thread while it is blocked waiting for a peer.
+    _exit(sig);
 }
 
 static void usage(const char *prog)
@@ -81,8 +83,11 @@ int main(int argc, char *argv[])
         }
     }
 
+    // A slave always tracks updates locally so it can be promoted later.
+    if (is_slave)
+        replicate::g_replicate = true;
+
     auto &prot = kv_protocal::KvStoreProtocal::instance();
-    (void)prot;
 
     // In RDB mode a snapshot is taken on demand: send SIGUSR1 (e.g. `kill -USR1 <pid>`)
     // and a dedicated thread forks a child to dump the dataset via save().
@@ -109,26 +114,21 @@ int main(int argc, char *argv[])
             .detach();
     }
 
+    // Load the eBPF delta tracer before serving traffic. It exits the process on
+    // failure and is otherwise first reached from inside the engine lock, where
+    // exiting deadlocks against the replication thread waiting on that same lock.
+    if (replicate::g_replicate)
+        replicate::DeltaSyncObject::instance();
+
     if (is_slave)
     {
-        // A slave always tracks updates locally so it can be promoted later.
-        replicate::g_replicate = true;
-#ifdef REACTOR
-        reactor::TcpSlaveServer servers(master_port, master_ip);
-        servers.init();
-        servers.start_eventloop();
-#elif defined(PROACTOR)
-        proactor::TcpSlaveServer servers(master_port, master_ip);
-        servers.init();
-        servers.start_eventloop();
-#elif defined(COROUTINE)
-        hpc_coroutine::TcpSlaveServer servers(master_port, master_ip);
-        servers.init();
-        servers.start_eventloop();
-#endif
+        auto &slave = replicate::SlaveServer::instance(master_port, master_ip);
+        slave.server_loop();
     }
     else
     {
+        if (replicate::g_replicate)
+            replicate::MasterServer::instance().start();
 #ifdef REACTOR
         reactor::TcpServers servers(DEFAULT_PORT);
         servers.init();

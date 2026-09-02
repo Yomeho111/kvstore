@@ -1,7 +1,11 @@
 # build output
 build/
 cmake-build-*/
+build-replication-test/
 out/
+
+# replication test artifacts (see scripts/test_master_slave.sh --clean)
+.replication-test/
 
 # object / library files
 *.o

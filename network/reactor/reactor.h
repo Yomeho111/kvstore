@@ -128,38 +128,6 @@ namespace reactor
         int _fd_list[PORT_NUM];
     };
 
-    class TcpSlaveServer : public TcpBase
-    {
-    public:
-        TcpSlaveServer(uint16_t port, const char *ip)
-            : _port(port), _ip(ip), _heartbeat(false) {}
-
-        int init();
-
-        int start_eventloop();
-
-        int set_event(int fd, uint32_t events, int ops) override;
-
-        int del_fd(int fd) override;
-
-        ~TcpSlaveServer();
-
-    private:
-        int init_client();
-
-        TcpSlaveServer(const TcpSlaveServer &) = delete;
-        TcpSlaveServer(TcpSlaveServer &&) = delete;
-
-        TcpSlaveServer &operator=(const TcpSlaveServer &) = delete;
-        TcpSlaveServer &operator=(TcpSlaveServer &&) = delete;
-
-        bool _heartbeat;
-        uint16_t _port;
-        int _epfd;
-        int _fd;
-        const char *_ip;
-    };
-
     class Timer
     {
     public:

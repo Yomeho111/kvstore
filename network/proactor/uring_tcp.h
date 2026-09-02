@@ -144,42 +144,6 @@ namespace proactor
         uint16_t _port;
     };
 
-    class TcpSlaveServer
-    {
-    public:
-        TcpSlaveServer(uint16_t port, const char *ip)
-            : _heartbeat(false), _port(port), _fd(-1), _ip(ip) {}
-
-        int init();
-
-        int start_eventloop();
-
-        ~TcpSlaveServer();
-
-    private:
-        int init_client();
-
-        int set_event_recv(int fd, Conn *conn, int flags);
-
-        int set_event_send(int fd, Conn *conn, int flags);
-
-        int recv_cb(Conn *conn, struct io_uring_cqe *cqe);
-
-        int send_cb(Conn *conn, struct io_uring_cqe *cqe);
-
-        TcpSlaveServer(const TcpSlaveServer &) = delete;
-        TcpSlaveServer(TcpSlaveServer &&) = delete;
-
-        TcpSlaveServer &operator=(const TcpSlaveServer &) = delete;
-        TcpSlaveServer &operator=(TcpSlaveServer &&) = delete;
-
-        bool _heartbeat;
-        uint16_t _port;
-        int _fd;
-        const char *_ip;
-        struct io_uring _ring;
-    };
-
     class Timer
     {
     public:

@@ -10,18 +10,14 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <cerrno>
+#include <mutex>
 #include "engine_interface_base.h"
 #include "allocator.h"
 #include "kv_persistent.h"
 #include "memory_utils.h"
 #include "slab.hpp"
 #include "timer.h"
-#include "rep_manager.h"
-
-using string = std::basic_string<
-    char,
-    std::char_traits<char>,
-    allocator::MyAllocator<char>>;
+#include "replicate.h"
 
 namespace kv_engine
 {
@@ -33,7 +29,7 @@ namespace kv_engine
         ~EngineInterface() = default;
 
     public:
-        int set(char *key, size_t key_len, char *value, size_t val_len, struct kv_protocal::TimeoutSpec *timeout = nullptr, bool to_disk = true) override
+        int set(const char *key, size_t key_len, const char *value, size_t val_len, struct kv_protocal::TimeoutSpec *timeout = nullptr, bool to_disk = true) override
         {
             if (key_len == 0 || val_len == 0)
                 return -1;
@@ -56,7 +52,7 @@ namespace kv_engine
                 store_engine.dump_record(kv_protocal::KVS_SET, key_s, val_s) < 0)
                 return -2;
 
-            if (to_disk && replicate::g_replicate && replicate::RepManager::instance().insert_node(&key_s, &val_s, kv_protocal::KVS_SET) < 0)
+            if (to_disk && replicate::g_replicate && replicate::DeltaSyncObject::instance().insert_node(kv_protocal::KVS_SET, key_len, val_len, key, value) < 0)
                 return -3;
 
             if (timeout && timeout->tv_sec != -1 && timeout->tv_nsec != -1)
@@ -69,7 +65,7 @@ namespace kv_engine
                     {
                         std::lock_guard lk{this->lock_};
                         static_cast<RealEngine *>(this)->get_base().delNode(k_s);
-                        if (to_disk && replicate::g_replicate && replicate::RepManager::instance().insert_node(&k_s, nullptr, kv_protocal::KVS_DEL) < 0)
+                        if (to_disk && replicate::g_replicate && replicate::DeltaSyncObject::instance().insert_node(kv_protocal::KVS_DEL, k_s.size(), 0, k_s.c_str(), nullptr) < 0)
                             ;
                         if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF)
                             this->store_engine.dump_record(kv_protocal::KVS_DEL, k_s, string{});
@@ -78,7 +74,7 @@ namespace kv_engine
             return 0;
         }
 
-        int get(char *key, size_t key_len, char **value) override
+        int get(const char *key, size_t key_len, char **value) override
         {
             if (key_len == 0)
                 return -1;
@@ -102,7 +98,7 @@ namespace kv_engine
             return node->value.size() + 2;
         }
 
-        int modify(char *key, size_t key_len, char *value, size_t val_len, struct kv_protocal::TimeoutSpec *timeout = nullptr, bool to_disk = true) override
+        int modify(const char *key, size_t key_len, const char *value, size_t val_len, struct kv_protocal::TimeoutSpec *timeout = nullptr, bool to_disk = true) override
         {
             if (key_len == 0 || val_len == 0)
                 return -1;
@@ -124,7 +120,7 @@ namespace kv_engine
                 store_engine.dump_record(kv_protocal::KVS_MOD, key_s, val_s) < 0)
                 return -2;
 
-            if (to_disk && replicate::g_replicate && replicate::RepManager::instance().insert_node(&key_s, &val_s, kv_protocal::KVS_MOD) < 0)
+            if (to_disk && replicate::g_replicate && replicate::DeltaSyncObject::instance().insert_node(kv_protocal::KVS_MOD, key_len, val_len, key, value) < 0)
                 return -3;
 
             if (timeout && timeout->tv_sec != -1 && timeout->tv_nsec != -1)
@@ -137,7 +133,7 @@ namespace kv_engine
                     {
                         std::lock_guard lk{this->lock_};
                         static_cast<RealEngine *>(this)->get_base().delNode(k_s);
-                        if (to_disk && replicate::g_replicate && replicate::RepManager::instance().insert_node(&k_s, nullptr, kv_protocal::KVS_DEL) < 0)
+                        if (to_disk && replicate::g_replicate && replicate::DeltaSyncObject::instance().insert_node(kv_protocal::KVS_DEL, k_s.size(), 0, k_s.c_str(), nullptr) < 0)
                             ;
                         if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF)
                             this->store_engine.dump_record(kv_protocal::KVS_DEL, k_s, string{});
@@ -146,7 +142,7 @@ namespace kv_engine
             return 0;
         }
 
-        int del(char *key, size_t key_len, bool to_disk = true) override
+        int del(const char *key, size_t key_len, bool to_disk = true) override
         {
             if (key_len == 0)
                 return -1;
@@ -164,12 +160,12 @@ namespace kv_engine
                 store_engine.dump_record(kv_protocal::KVS_DEL, key_s, string{}) < 0)
                 return -2;
 
-            if (to_disk && replicate::g_replicate && replicate::RepManager::instance().insert_node(&key_s, nullptr, kv_protocal::KVS_DEL) < 0)
+            if (to_disk && replicate::g_replicate && replicate::DeltaSyncObject::instance().insert_node(kv_protocal::KVS_DEL, key_len, 0, key, nullptr) < 0)
                 return -3;
             return 0;
         }
 
-        int exist(char *key, size_t key_len) override
+        int exist(const char *key, size_t key_len) override
         {
             if (key_len == 0)
                 return -1;
@@ -255,10 +251,19 @@ namespace kv_engine
 
         int size()
         {
+            std::lock_guard lk{lock_};
             return static_cast<RealEngine *>(this)->get_base().size();
         }
 
-        memory::SpinLock lock_;
+        void lock() noexcept
+        {
+            lock_.lock();
+        }
+
+        void unlock() noexcept
+        {
+            lock_.unlock();
+        }
 
     private:
         kv_persistent::StoreEngine store_engine;
@@ -266,6 +271,8 @@ namespace kv_engine
         // lives in the engine's storage (static, for the singleton) instead of on the
         // small SIGUSR1 dump thread's stack. Only exercised in RDB mode.
         kv_persistent::SnapshotEngine snapshot_engine;
+
+        memory::SpinLock lock_;
     };
 } // namespace kv_engine
 #endif // __ENGINE_INTERFACE_H
