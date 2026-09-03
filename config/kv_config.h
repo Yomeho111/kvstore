@@ -20,7 +20,7 @@ namespace kv_config
     {
         uint16_t port{8050};
         kv_log::Level log_level{kv_log::Level::INFO};
-        kv_persistent::PersistMode persist_mode{kv_persistent::PersistMode::AOF};
+        kv_persistent::PersistMode persist_mode{kv_persistent::PersistMode::NONE};
         Role role{Role::STANDALONE};
 
         // Only meaningful when role is SLAVE: the master's RDMA endpoint.

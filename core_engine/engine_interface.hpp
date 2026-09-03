@@ -184,6 +184,8 @@ namespace kv_engine
 
         int init() noexcept override
         {
+            if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::NONE)
+                return 0;
             if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::RDB)
                 return snapshot_engine.load(this);
             return store_engine.load_record(this);

@@ -43,7 +43,7 @@ static void usage(const char *prog)
             "  log_level   = info              error | warn | info | debug\n"
             "\n"
             "  [persistence]\n"
-            "  mode        = aof               aof | rdb\n"
+            "  mode        = none              none | aof | rdb\n"
             "\n"
             "  [replication]\n"
             "  role        = standalone        standalone | master | slave\n"
