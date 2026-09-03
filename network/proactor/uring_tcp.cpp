@@ -8,6 +8,7 @@
 #include "network_utils.h"
 #include "timer.h"
 #include "hiredis.h"
+#include "kv_log.h"
 
 #define RESP_RECV_BUF_SIZE 16384
 #define RESP_MAX_ARGS 64
@@ -87,7 +88,7 @@ namespace proactor
     {
         if (fd >= MAX_CONN_SIZE || fd < 0) [[unlikely]]
         {
-            perror("invalid Conn");
+            KV_ERROR("invalid Conn");
             return nullptr;
         }
         return &_pool[fd];
@@ -195,7 +196,7 @@ namespace proactor
     {
         if (fd < 0 || fd >= MAX_CONN_SIZE)
         {
-            perror("Invalid fd for register_listenfd");
+            KV_ERROR("Invalid fd for register_listenfd");
             return -1;
         }
         clean_up_r_w(fd);
@@ -210,7 +211,7 @@ namespace proactor
     {
         if (fd < 0 || fd >= MAX_CONN_SIZE)
         {
-            perror("Invalid clientfd for register_clientfd");
+            KV_ERROR("Invalid clientfd for register_clientfd");
             return -1;
         }
         clean_up_r_w(fd);
@@ -236,7 +237,7 @@ namespace proactor
         int listenfd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
         if (listenfd == -1)
         {
-            perror("error socket");
+            KV_ERROR("error socket");
             return -1;
         }
 
@@ -252,14 +253,14 @@ namespace proactor
 
         if (bind(listenfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) == -1)
         {
-            perror("bind error");
+            KV_ERROR("bind error");
             close(listenfd);
             return -1;
         }
 
         if (listen(listenfd, 10) == -1)
         {
-            perror("error listen");
+            KV_ERROR("error listen");
             close(listenfd);
             return -1;
         }
@@ -267,7 +268,7 @@ namespace proactor
         ConnPool *pool = ConnPool::get_connpool();
         if (pool->setup_accept_conn(listenfd) == -1)
         {
-            perror("error setup_accept_conn");
+            KV_ERROR("error setup_accept_conn");
             return -1;
         }
         return listenfd;
@@ -297,7 +298,7 @@ namespace proactor
             {
                 if (network::alloc_single_iovec(&conn->r_iovec, kv_protocal::NUM_HEADER_SIZE) != 0)
                 {
-                    perror("error malloc");
+                    KV_ERROR("error malloc");
                     return -1;
                 }
                 io_uring_prep_recv(sqe, fd, conn->r_iovec[0].iov_base, conn->r_iovec[0].iov_len, flags | MSG_WAITALL);
@@ -344,7 +345,7 @@ namespace proactor
 
         if (io_uring_queue_init_params(ENTRIES, &_ring, &params) < 0)
         {
-            perror("error io_uring_queue_init_params");
+            KV_ERROR("error io_uring_queue_init_params");
             return -1;
         }
 
@@ -355,7 +356,7 @@ namespace proactor
             int sockfd = init_server(_port + i);
             if (sockfd == -1)
             {
-                perror("error init server");
+                KV_ERROR("error init server");
                 continue;
             }
             _socklen_list[i] = sizeof(_sock_in_list[i]);
@@ -378,7 +379,7 @@ namespace proactor
         if (clientfd < 0)
         {
             errno = -clientfd;
-            perror("error accept");
+            KV_ERROR("error accept");
             return -1;
         }
 
@@ -404,7 +405,7 @@ namespace proactor
         struct io_uring_sqe *sqe = io_uring_get_sqe(&_ring);
         if (sqe == nullptr)
         {
-            perror("Error get_sqe for protocol detection");
+            KV_ERROR("Error get_sqe for protocol detection");
             pool->clean_up_conn(clientfd);
             return -1;
         }
@@ -431,7 +432,7 @@ namespace proactor
                 goto clean;
             }
             errno = -count;
-            perror("error recv");
+            KV_ERROR("error recv");
             ret = -1;
             goto clean;
         }
@@ -453,7 +454,7 @@ namespace proactor
             // still queued because MSG_PEEK did not consume it).
             if (set_event_recv(conn->fd, conn, 0) == -1)
             {
-                perror("Error set_event_recv");
+                KV_ERROR("Error set_event_recv");
                 ret = -1;
                 goto clean;
             }
@@ -469,7 +470,7 @@ namespace proactor
             {
                 if (count != kv_protocal::NUM_HEADER_SIZE)
                 {
-                    perror("corrupted number of request");
+                    KV_ERROR("corrupted number of request");
                     goto clean;
                 }
 
@@ -480,7 +481,7 @@ namespace proactor
                 {
                     if (kv_protocal::KvStoreProtocal::instance().process_num_request(&conn->status, num_request) != 0)
                     {
-                        perror("Processing number of request failure");
+                        KV_ERROR("Processing number of request failure");
                         ret = -1;
                         goto clean;
                     }
@@ -488,7 +489,7 @@ namespace proactor
 
                 if (set_event_recv(conn->fd, conn, 0) == -1)
                 {
-                    perror("Error set_event_recv");
+                    KV_ERROR("Error set_event_recv");
                     ret = -1;
                     goto clean;
                 }
@@ -499,20 +500,20 @@ namespace proactor
             {
                 if (count != static_cast<int>(conn->status.num_request * kv_protocal::HEADER_SIZE))
                 {
-                    perror("corrupted header");
+                    KV_ERROR("corrupted header");
                     goto clean;
                 }
 
                 if (kv_protocal::KvStoreProtocal::instance().process_header(&conn->status, &conn->r_iovec) != 0)
                 {
-                    perror("Processing header failure");
+                    KV_ERROR("Processing header failure");
                     ret = -1;
                     goto clean;
                 }
 
                 if (set_event_recv(conn->fd, conn, 0) == -1)
                 {
-                    perror("Error set_event_recv");
+                    KV_ERROR("Error set_event_recv");
                     ret = -1;
                     goto clean;
                 }
@@ -528,7 +529,7 @@ namespace proactor
                 {
                     if (set_event_recv(conn->fd, conn, 0) == -1)
                     {
-                        perror("Error set_event_recv");
+                        KV_ERROR("Error set_event_recv");
                         ret = -1;
                         goto clean;
                     }
@@ -540,7 +541,7 @@ namespace proactor
                 count = kv_protocal::KvStoreProtocal::instance().process_body(&conn->status, conn->r_iovec, &conn->w_iovec);
                 if (count < 0)
                 {
-                    perror("Error handling body");
+                    KV_ERROR("Error handling body");
                     ret = -1;
                     goto clean;
                 }
@@ -548,7 +549,7 @@ namespace proactor
                 {
                     if (set_event_send(conn->fd, conn, 0) == -1)
                     {
-                        perror("Error set_event_send");
+                        KV_ERROR("Error set_event_send");
                         ret = -1;
                         goto clean;
                     }
@@ -557,7 +558,7 @@ namespace proactor
                 {
                     if (set_event_recv(conn->fd, conn, 0) == -1)
                     {
-                        perror("Error set_event_recv");
+                        KV_ERROR("Error set_event_recv");
                         ret = -1;
                         goto clean;
                     }
@@ -565,7 +566,7 @@ namespace proactor
                 break;
             }
             default:
-                perror("Error recv status");
+                KV_ERROR("Error recv status");
                 ret = -1;
                 goto clean;
         }
@@ -586,7 +587,7 @@ namespace proactor
         if (ret < 0)
         {
             errno = -ret;
-            perror("Error send");
+            KV_ERROR("Error send");
             ConnPool::get_connpool()->clean_up_conn(conn->fd);
             return -1;
         }
@@ -598,7 +599,7 @@ namespace proactor
         {
             if (set_event_send(conn->fd, conn, 0) == -1)
             {
-                perror("Error set_event_send");
+                KV_ERROR("Error set_event_send");
                 ConnPool::get_connpool()->clean_up_conn(conn->fd);
                 return -1;
             }
@@ -613,7 +614,7 @@ namespace proactor
 
         if (set_event_recv(conn->fd, conn, 0) == -1)
         {
-            perror("Error set_event_recv");
+            KV_ERROR("Error set_event_recv");
             ConnPool::get_connpool()->clean_up_conn(conn->fd);
             return -1;
         }
@@ -823,7 +824,7 @@ namespace proactor
             }
             else if (ret < 0)
             {
-                perror("error io_uring_wait_cqe");
+                KV_ERROR("error io_uring_wait_cqe");
                 return -1;
             }
 
@@ -841,7 +842,7 @@ namespace proactor
                 {
                     if (accept_cb(conn, cqes[i]) == -1)
                     {
-                        perror("error accept_cb");
+                        KV_ERROR("error accept_cb");
                         return -1;
                     }
                 }
@@ -849,7 +850,7 @@ namespace proactor
                 {
                     if (recv_cb(conn, cqes[i]) == -1)
                     {
-                        perror("error recv_cb");
+                        KV_ERROR("error recv_cb");
                         return -1;
                     }
                 }
@@ -857,7 +858,7 @@ namespace proactor
                 {
                     if (send_cb(conn, cqes[i]) == -1)
                     {
-                        perror("error send_cb");
+                        KV_ERROR("error send_cb");
                         return -1;
                     }
                 }

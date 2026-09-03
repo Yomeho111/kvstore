@@ -9,6 +9,7 @@
 #include "kv_protocal.hpp"
 #include "kv_log.h"
 #include "delta.skel.h"
+#include "kv_log.h"
 
 #include "delta.h"
 
