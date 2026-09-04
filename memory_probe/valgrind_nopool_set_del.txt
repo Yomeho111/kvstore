@@ -1,0 +1,48 @@
+# Valgrind memcheck run of the kvstore server, no memory pool (glibc malloc).
+#
+# Build:   cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+#              -DNETWORK=REACTOR -DENGINE=RBTREE_ENGINE \
+#              -DENABLE_MEMORY_POOL=OFF -DENABLE_TCMALLOC=OFF -DENABLE_JEMALLOC=OFF
+# Config:  repo kvstore.ini (port 8050, persistence mode = aof, role = standalone),
+#          started from a clean working directory with an empty data/.
+# Server:  valgrind --tool=memcheck --leak-check=full --show-leak-kinds=all \
+#              --errors-for-leak-kinds=definite,indirect --num-callers=25 \
+#              --error-limit=no --child-silent-after-fork=yes ./kvstore ./kvstore.ini
+#          No suppression file: none is needed any more.
+# Load:    kvstore_client_testcase 127.0.0.1 8050 5   # 100 000 SET, 1 KB value
+#          kvstore_client_testcase 127.0.0.1 8050 6   # 100 000 DEL
+#          (count is N in kvstore_client/testcase.cpp)
+# Stop:    SIGTERM -> main.cpp handler() -> exit()
+#
+# Result:  "All heap blocks were freed -- no leaks are possible", 0 errors,
+#          907,862 allocs == 907,862 frees.
+#
+#          Switching the signal handler from _exit() to exit() is what made the
+#          report completely clean. exit() runs the atexit/static destructors and
+#          _dl_fini, so glibc releases the __cxa_thread_atexit TLS record and
+#          libnl-3 / libnl-route-3 tear down the translation table they build in
+#          their ELF constructors. Under _exit() those 21 blocks (420 B) stayed
+#          mapped and had to be filtered with memory_probe/valgrind.supp.
+#
+#          Caveat: this run used role = standalone. With role = master or slave
+#          the static destructors also join the replication thread, which is the
+#          shutdown hang the original _exit() comment warned about.
+==2988025== Memcheck, a memory error detector
+==2988025== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==2988025== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==2988025== Command: /home/mingfeng/kvstore/build/kvstore ./kvstore.ini
+==2988025== Parent PID: 2986993
+==2988025== 
+==2988025== Warning: ignored attempt to set SIGKILL handler in sigaction();
+==2988025==          the SIGKILL signal is uncatchable
+==2988025== Warning: ignored attempt to set SIGSTOP handler in sigaction();
+==2988025==          the SIGSTOP signal is uncatchable
+==2988025== 
+==2988025== HEAP SUMMARY:
+==2988025==     in use at exit: 0 bytes in 0 blocks
+==2988025==   total heap usage: 907,862 allocs, 907,862 frees, 447,902,454 bytes allocated
+==2988025== 
+==2988025== All heap blocks were freed -- no leaks are possible
+==2988025== 
+==2988025== For lists of detected and suppressed errors, rerun with: -s
+==2988025== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)

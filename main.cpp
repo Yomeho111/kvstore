@@ -25,9 +25,10 @@ void handler(int sig)
 {
     const char msg[] = "Close the server\n";
     (void)!write(STDOUT_FILENO, msg, sizeof(msg) - 1);
-    // _exit() is async-signal-safe, and it skips the static destructors that join
-    // the replication thread while it is blocked waiting for a peer.
-    _exit(sig);
+    // exit() rather than _exit() so static/TLS destructors and _dl_fini run and the
+    // process leaves nothing allocated. It is not async-signal-safe, and in the
+    // master/slave roles it can block joining the replication thread.
+    exit(sig);
 }
 
 static void usage(const char *prog)
