@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <cstring>
 #include "hpc_coroutine.h"
+#include "kv_log.h"
 
 socket_t socket_f = nullptr;
 connect_t connect_f = nullptr;
@@ -35,7 +36,7 @@ int socket(int domain, int type, int protocol)
     int fd = socket_f(domain, type, protocol);
     if (fd == -1)
     {
-        perror("Failed to create a new socket");
+        KV_ERROR("Failed to create a new socket");
         return -1;
     }
     int ret = fcntl(fd, F_SETFL, O_NONBLOCK);
@@ -62,7 +63,7 @@ ssize_t recv(int fd, void *buf, size_t len, int flags)
     int ret = hpc_coroutine::CoroutineSched::get_coroutine_sched()->poll_inner(&fds, 1);
     if (ret == -1)
     {
-        perror("Error recv");
+        KV_ERROR("Error recv");
         return -1;
     }
 
@@ -78,7 +79,7 @@ ssize_t recv(int fd, void *buf, size_t len, int flags)
             return ret;
         if (errno == ECONNRESET)
         {
-            perror("reset by peer");
+            KV_ERROR("reset by peer");
             return -1;
         }
     }
@@ -107,7 +108,7 @@ ssize_t send(int fd, const void *buf, size_t len, int flags)
         ret = hpc_coroutine::CoroutineSched::get_coroutine_sched()->poll_inner(&fds, 1);
         if (ret == -1)
         {
-            perror("Error send");
+            KV_ERROR("Error send");
             return -1;
         }
         ret = send_f(fd, ((char *)buf) + sent, len - sent, flags);
@@ -140,7 +141,7 @@ int accept(int fd, struct sockaddr *addr, socklen_t *len)
         int ret = hpc_coroutine::CoroutineSched::get_coroutine_sched()->poll_inner(&fds, 1);
         if (ret == -1)
         {
-            perror("Error accept");
+            KV_ERROR("Error accept");
             return -1;
         }
 
@@ -249,7 +250,7 @@ ssize_t readv_full(int fd, const struct ::iovec *iov, int iovcnt)
         int ret = hpc_coroutine::CoroutineSched::get_coroutine_sched()->poll_inner(&fds, 1);
         if (ret == -1)
         {
-            perror("Error recv");
+            KV_ERROR("Error recv");
             return -1;
         }
 
@@ -322,7 +323,7 @@ ssize_t writev_all(int fd, const struct ::iovec *iov, int iovcnt)
         int ret = hpc_coroutine::CoroutineSched::get_coroutine_sched()->poll_inner(&fds, 1);
         if (ret == -1)
         {
-            perror("Error send");
+            KV_ERROR("Error send");
             return -1;
         }
 

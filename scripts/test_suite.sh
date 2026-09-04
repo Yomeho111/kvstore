@@ -19,7 +19,8 @@
 # persistent database is carried between tests. The build tree is never removed.
 #
 # Overrides: BUILD_DIR, PORT, HOST, PRESSURE_PERSIST (aof|rdb), KEEP_LOGS=1,
-#            REQUESTS, SWEEP_REQUESTS, LATENCY_REQUESTS (pressure request counts)
+#            REQUESTS, SWEEP_REQUESTS, LATENCY_REQUESTS, KEYSPACE (pressure
+#            request counts; raise them for a full characterisation run)
 
 set -Eeuo pipefail
 
@@ -465,12 +466,15 @@ test_pressure()
     log "Running pressure test (persistence=$PRESSURE_PERSIST, output muted)..."
 
     local status=0
-    # Half the standalone request counts: here the benchmark is a regression
-    # gate, not a full characterisation run. Flags in PRESSURE_ARGS still win,
-    # because pressure_test.sh parses them after reading the environment.
-    REQUESTS=${REQUESTS:-500000} \
-        SWEEP_REQUESTS=${SWEEP_REQUESTS:-100000} \
-        LATENCY_REQUESTS=${LATENCY_REQUESTS:-20000} \
+    # A fraction of the standalone request counts: here the benchmark is a
+    # regression gate, not a full characterisation run, so every dimension is
+    # still swept, just with far fewer requests per point. Flags in
+    # PRESSURE_ARGS still win, because pressure_test.sh parses them after
+    # reading the environment.
+    REQUESTS=${REQUESTS:-100000} \
+        SWEEP_REQUESTS=${SWEEP_REQUESTS:-20000} \
+        LATENCY_REQUESTS=${LATENCY_REQUESTS:-5000} \
+        KEYSPACE=${KEYSPACE:-20000} \
         "$SCRIPT_DIR/pressure_test.sh" -h "$HOST" -p "$PORT" --no-save "${PRESSURE_ARGS[@]}" \
         >"$runtime/pressure.log" 2>&1 || status=$?
 

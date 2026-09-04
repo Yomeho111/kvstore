@@ -1,6 +1,7 @@
 #include "coroutine_server.h"
 #include "allocator.h"
 #include "status.h"
+#include "kv_log.h"
 
 #include <errno.h>
 #include <sys/uio.h>
@@ -23,7 +24,7 @@ namespace hpc_coroutine
             int sockfd = init_server(_port + i);
             if (sockfd == -1)
             {
-                perror("init_server");
+                KV_ERROR("init_server");
             }
             _fd_list[i] = sockfd;
         }
@@ -47,7 +48,7 @@ namespace hpc_coroutine
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0)
         {
-            perror("error socket");
+            KV_ERROR("error socket");
             return -1;
         }
 
@@ -57,14 +58,14 @@ namespace hpc_coroutine
         local.sin_addr.s_addr = INADDR_ANY;
         if (bind(fd, (struct sockaddr *)&local, sizeof(struct sockaddr_in)) == -1)
         {
-            perror("error bind");
+            KV_ERROR("error bind");
             close(fd);
             return -1;
         }
 
         if (listen(fd, 20) == -1)
         {
-            perror("error listen");
+            KV_ERROR("error listen");
             close(fd);
             return -1;
         }
@@ -185,7 +186,7 @@ namespace hpc_coroutine
             if (ret <= 0)
             {
                 if (ret < 0)
-                    perror("error recv");
+                    KV_ERROR("error recv");
                 close(fd);
                 return;
             }
@@ -195,7 +196,7 @@ namespace hpc_coroutine
 
             if (kv_protocal::KvStoreProtocal::instance().process_num_request(&status, num_header.num_request) != 0)
             {
-                perror("Processing number of request failure");
+                KV_ERROR("Processing number of request failure");
                 should_close = true;
                 goto clean;
             }
@@ -204,7 +205,7 @@ namespace hpc_coroutine
             status.req_info = (kv_protocal::HeaderInfo *)allocator::kv_malloc(header_size);
             if (status.req_info == nullptr)
             {
-                perror("Error Memory allocation");
+                KV_ERROR("Error Memory allocation");
                 goto clean;
             }
 
@@ -212,14 +213,14 @@ namespace hpc_coroutine
             if (ret <= 0)
             {
                 if (ret < 0)
-                    perror("error recv");
+                    KV_ERROR("error recv");
                 should_close = true;
                 goto clean;
             }
 
             if (kv_protocal::KvStoreProtocal::instance().process_header(&status, &r_iovec) != 0)
             {
-                perror("Processing header failure");
+                KV_ERROR("Processing header failure");
                 should_close = true;
                 goto clean;
             }
@@ -228,7 +229,7 @@ namespace hpc_coroutine
             if (ret <= 0)
             {
                 if (ret < 0)
-                    perror("error read");
+                    KV_ERROR("error read");
                 should_close = true;
                 goto clean;
             }
@@ -236,7 +237,7 @@ namespace hpc_coroutine
             process_count = kv_protocal::KvStoreProtocal::instance().process_body(&status, r_iovec, &w_iovec);
             if (process_count < 0)
             {
-                perror("Error handling body");
+                KV_ERROR("Error handling body");
                 should_close = true;
                 goto clean;
             }
@@ -247,7 +248,7 @@ namespace hpc_coroutine
                 if (ret <= 0)
                 {
                     if (ret < 0)
-                        perror("Error write");
+                        KV_ERROR("Error write");
                     should_close = true;
                     goto clean;
                 }

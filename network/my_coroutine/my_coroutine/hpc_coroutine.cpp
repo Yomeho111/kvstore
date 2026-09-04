@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <string.h>
 #include "utils.h"
+#include "kv_log.h"
 
 #include "allocator.h"
 #include "timer.h"
@@ -44,21 +45,21 @@ namespace hpc_coroutine
         epfd_ = epoll_create(1024);
         if (epfd_ < 0)
         {
-            perror("Error epoll_create");
+            KV_ERROR("Error epoll_create");
             return -1;
         }
 
         stack_ = allocator::kv_malloc(stack_size_); // posix_memalign(&stack_, getpagesize(), stack_size_);
         if (stack_ == nullptr)
         {
-            perror("Error allocating stack for scheduler");
+            KV_ERROR("Error allocating stack for scheduler");
             return -1;
         }
 
         events_ = (struct epoll_event *)allocator::kv_malloc(sizeof(struct epoll_event) * EPOLL_EVENTS_SIZE);
         if (events_ == nullptr) [[unlikely]]
         {
-            perror("Error allocating events_");
+            KV_ERROR("Error allocating events_");
             return -1;
         }
 
@@ -103,7 +104,7 @@ namespace hpc_coroutine
         int nready = epoll_wait(epfd_, events_, EPOLL_EVENTS_SIZE, wait_time);
         if (nready < 0)
         {
-            perror("Error epoll_wait");
+            KV_ERROR("Error epoll_wait");
             return -1;
         }
 
@@ -144,7 +145,7 @@ namespace hpc_coroutine
                     epoll_ctl(epfd_, EPOLL_CTL_MOD, fds->fd, &ev);
                 else
                 {
-                    perror("epoll_ctl ADD");
+                    KV_ERROR("epoll_ctl ADD");
                     return -1;
                 }
             }
@@ -157,7 +158,7 @@ namespace hpc_coroutine
         }
         else if (nready < 0) [[unlikely]]
         {
-            perror("Error poll_inner");
+            KV_ERROR("Error poll_inner");
             return -1;
         }
 

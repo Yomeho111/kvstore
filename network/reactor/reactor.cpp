@@ -8,6 +8,7 @@
 #include "network_utils.h"
 #include "timer.h"
 #include "hiredis.h"
+#include "kv_log.h"
 
 #define RESP_RECV_BUF_SIZE 16384
 #define RESP_MAX_ARGS 64
@@ -25,7 +26,7 @@ namespace reactor
     {
         if (fd >= MAX_CONN_SIZE || fd < 0) [[unlikely]]
         {
-            perror("invalid Conn");
+            KV_ERROR("invalid Conn");
             return nullptr;
         }
         return &_pool[fd];
@@ -105,7 +106,7 @@ namespace reactor
     {
         if (fd < 0 || fd >= MAX_CONN_SIZE)
         {
-            perror("Invalid fd for register_listenfd");
+            KV_ERROR("Invalid fd for register_listenfd");
             return -1;
         }
         clean_up_r_w(fd);
@@ -122,7 +123,7 @@ namespace reactor
     {
         if (fd < 0 || fd >= MAX_CONN_SIZE)
         {
-            perror("Invalid clientfd for register_clientfd");
+            KV_ERROR("Invalid clientfd for register_clientfd");
             return -1;
         }
         clean_up_r_w(fd);
@@ -147,7 +148,7 @@ namespace reactor
 
         if (epoll_ctl(_epfd, ops, fd, &ev) == -1)
         {
-            perror("error epoll_ctl");
+            KV_ERROR("error epoll_ctl");
             return -1;
         }
 
@@ -159,7 +160,7 @@ namespace reactor
         int listenfd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
         if (listenfd == -1)
         {
-            perror("error socket");
+            KV_ERROR("error socket");
             return -1;
         }
 
@@ -175,14 +176,14 @@ namespace reactor
 
         if (bind(listenfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) == -1)
         {
-            perror("bind error");
+            KV_ERROR("bind error");
             close(listenfd);
             return -1;
         }
 
         if (listen(listenfd, 10) == -2)
         {
-            perror("error listen");
+            KV_ERROR("error listen");
             close(listenfd);
             return -1;
         }
@@ -190,13 +191,13 @@ namespace reactor
         ConnPool *pool = ConnPool::get_connpool();
         if (pool->setup_accept_conn(listenfd, this) == -1)
         {
-            perror("error setup_accept_conn");
+            KV_ERROR("error setup_accept_conn");
             return -1;
         }
 
         if (set_event(listenfd, EPOLLIN, EPOLL_CTL_ADD) == -1)
         {
-            perror("error set_event");
+            KV_ERROR("error set_event");
             pool->clean_up_conn(listenfd);
             return -1;
         }
@@ -221,7 +222,7 @@ namespace reactor
             int sockfd = init_server(_port + i);
             if (sockfd == -1)
             {
-                perror("error init server");
+                KV_ERROR("error init server");
                 continue;
             }
             _fd_list[i] = sockfd;
@@ -233,7 +234,7 @@ namespace reactor
     {
         if (epoll_ctl(_epfd, EPOLL_CTL_DEL, fd, NULL) == -1)
         {
-            perror("error epoll_ctl");
+            KV_ERROR("error epoll_ctl");
             return -1;
         }
         return 0;
@@ -253,7 +254,7 @@ namespace reactor
             {
                 if (errno == EINTR)
                     continue;
-                perror("error epoll_wait");
+                KV_ERROR("error epoll_wait");
                 return -1;
             }
 
@@ -286,7 +287,7 @@ namespace reactor
 
         if (fd < 0 || fd >= MAX_CONN_SIZE)
         {
-            perror("Invalid sockfd");
+            KV_ERROR("Invalid sockfd");
             return -1;
         }
 
@@ -295,7 +296,7 @@ namespace reactor
         int clientfd = accept(fd, (struct sockaddr *)&caddr, &addrlen);
         if (clientfd == -1)
         {
-            perror("error accept");
+            KV_ERROR("error accept");
             return -1;
         }
 
@@ -304,14 +305,14 @@ namespace reactor
         // register the clientfd into conn_list
         if (pool->setup_client_conn(clientfd, sock_conn->servers) == -1)
         {
-            perror("error register_clientfd");
+            KV_ERROR("error register_clientfd");
             close(clientfd);
             return -1;
         }
 
         if (sock_conn->servers->set_event(clientfd, EPOLLIN, EPOLL_CTL_ADD) == -1)
         {
-            perror("error set event");
+            KV_ERROR("error set event");
             pool->clean_up_conn(clientfd);
             return -1;
         }
@@ -331,7 +332,7 @@ namespace reactor
         int ret = 0;
         if (fd < 0 || fd >= MAX_CONN_SIZE)
         {
-            perror("Invalid sockfd");
+            KV_ERROR("Invalid sockfd");
             return -1;
         }
 
@@ -349,7 +350,7 @@ namespace reactor
             if (pk == 0)
             {
                 if (conn->servers->del_fd(fd) == -1)
-                    perror("error del_fd");
+                    KV_ERROR("error del_fd");
                 pool->clean_up_conn(fd);
                 return 0;
             }
@@ -357,9 +358,9 @@ namespace reactor
             {
                 if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
                     return 0;
-                perror("Error recv");
+                KV_ERROR("Error recv");
                 if (conn->servers->del_fd(fd) == -1)
-                    perror("error del_fd");
+                    KV_ERROR("error del_fd");
                 pool->clean_up_conn(fd);
                 return -1;
             }
@@ -384,12 +385,12 @@ namespace reactor
                     if (count == -ECONNRESET)
                         goto clean;
                     ret = -1;
-                    perror("Error recv");
+                    KV_ERROR("Error recv");
                     goto clean;
                 }
                 else if (count != kv_protocal::NUM_HEADER_SIZE)
                 {
-                    perror("corrupted number of request");
+                    KV_ERROR("corrupted number of request");
                     goto clean;
                 }
 
@@ -397,7 +398,7 @@ namespace reactor
                 {
                     if (kv_protocal::KvStoreProtocal::instance().process_num_request(&conn->status, num_header.num_request) != 0)
                     {
-                        perror("Processing number of error failure");
+                        KV_ERROR("Processing number of error failure");
                         ret = -1;
                         goto clean;
                     }
@@ -405,7 +406,7 @@ namespace reactor
 
                 if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
                 {
-                    perror("error set_event");
+                    KV_ERROR("error set_event");
                     ret = -1;
                     goto clean;
                 }
@@ -422,25 +423,25 @@ namespace reactor
                     if (count == -ECONNRESET)
                         goto clean;
                     ret = -1;
-                    perror("Error recv");
+                    KV_ERROR("Error recv");
                     goto clean;
                 }
                 else if (count != conn->status.num_request * kv_protocal::HEADER_SIZE)
                 {
-                    perror("corrupted header");
+                    KV_ERROR("corrupted header");
                     goto clean;
                 }
 
                 if (kv_protocal::KvStoreProtocal::instance().process_header(&conn->status, &conn->r_iovec) != 0)
                 {
-                    perror("Processing header failure");
+                    KV_ERROR("Processing header failure");
                     ret = -1;
                     goto clean;
                 }
 
                 if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
                 {
-                    perror("error set_event");
+                    KV_ERROR("error set_event");
                     ret = -1;
                     goto clean;
                 }
@@ -458,14 +459,14 @@ namespace reactor
                     if (count == -ECONNRESET)
                         goto clean;
                     ret = -1;
-                    perror("Error recv");
+                    KV_ERROR("Error recv");
                     goto clean;
                 }
 
                 count = kv_protocal::KvStoreProtocal::instance().process_body(&conn->status, conn->r_iovec, &conn->w_iovec);
                 if (count < 0)
                 {
-                    perror("Error handling body");
+                    KV_ERROR("Error handling body");
                     ret = -1;
                     goto clean;
                 }
@@ -473,7 +474,7 @@ namespace reactor
                 {
                     if (conn->servers->set_event(fd, EPOLLOUT, EPOLL_CTL_MOD))
                     {
-                        perror("error set_event");
+                        KV_ERROR("error set_event");
                         ret = -1;
                         goto clean;
                     }
@@ -482,7 +483,7 @@ namespace reactor
                 {
                     if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
                     {
-                        perror("error set_event");
+                        KV_ERROR("error set_event");
                         ret = -1;
                         goto clean;
                     }
@@ -490,7 +491,7 @@ namespace reactor
                 break;
             }
             default:
-                perror("Error recv status");
+                KV_ERROR("Error recv status");
                 ret = -1;
                 goto clean;
         }
@@ -500,7 +501,7 @@ namespace reactor
     clean:
         if (conn->servers->del_fd(fd) == -1)
         {
-            perror("error del_fd");
+            KV_ERROR("error del_fd");
         }
         pool->clean_up_conn(fd);
         return ret;
@@ -527,7 +528,7 @@ namespace reactor
             {
                 if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
                     return 0;
-                perror("Error recv");
+                KV_ERROR("Error recv");
                 goto clean;
             }
 
@@ -584,7 +585,7 @@ namespace reactor
                 io.iov_len = out.size();
                 if (writev_all(fd, &io, 1) < 0)
                 {
-                    perror("error send");
+                    KV_ERROR("error send");
                     goto clean;
                 }
             }
@@ -597,7 +598,7 @@ namespace reactor
 
     clean:
         if (conn->servers->del_fd(fd) == -1)
-            perror("error del_fd");
+            KV_ERROR("error del_fd");
         pool->clean_up_conn(fd);
         return 0;
     }
@@ -606,7 +607,7 @@ namespace reactor
     {
         if (fd < 0 || fd >= MAX_CONN_SIZE)
         {
-            perror("Invalid sockfd");
+            KV_ERROR("Invalid sockfd");
             return -1;
         }
 
@@ -620,14 +621,14 @@ namespace reactor
             int count = writev_all(fd, conn->w_iovec, conn->status.w_iovec_size);
             if (count < 0)
             {
-                perror("error send");
+                KV_ERROR("error send");
                 ret = -1;
                 goto clean;
             }
 
             if (conn->servers->set_event(fd, EPOLLIN, EPOLL_CTL_MOD))
             {
-                perror("error set_event");
+                KV_ERROR("error set_event");
                 ret = -1;
                 goto clean;
             }
@@ -636,7 +637,7 @@ namespace reactor
         }
         else
         {
-            perror("Error send status");
+            KV_ERROR("Error send status");
             ret = -1;
             goto clean;
         }
@@ -648,7 +649,7 @@ namespace reactor
     clean:
         if (conn->servers->del_fd(fd) == -1)
         {
-            perror("error del_fd");
+            KV_ERROR("error del_fd");
         }
         pool->clean_up_conn(fd);
         return ret;
