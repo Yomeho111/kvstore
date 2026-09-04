@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdlib.h>
+#include <malloc.h>
 #include <string>
 #include <memory>
 #include <stdio.h>
@@ -60,6 +61,7 @@ namespace allocator
             memory::BigMemoryAllocator::instance().free(p);
 #else
             ::free(p);
+            malloc_trim(0);
 #endif
         }
     };
