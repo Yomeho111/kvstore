@@ -376,11 +376,12 @@ A client-driven test harness is built as `kvstore_client_testcase`. Start a serv
 
 ### Memory Profiling
 
-The server's memory footprint under different allocators was profiled with
-[memory_probe/mem_profile.sh](memory_probe/mem_profile.sh), which samples
-`/proc/<pid>/status`. Each run used a **Release** build of the default
-`REACTOR` + `RBTREE_ENGINE` server on port 8050 with the `data/` directory
-cleared beforehand, driven through the test harness:
+The server's memory footprint under different allocators was profiled by sampling
+`/proc/<pid>/status` (see [memory_probe/mem_profile.sh](memory_probe/mem_profile.sh)
+for an interactive sampler). Each run used a **Release** build of the default
+`REACTOR` + `RBTREE_ENGINE` server on port 8050, launched from a clean working
+directory (fresh `data/`, `persistence.mode = aof`) and driven through the test
+harness:
 
 - **Peak / full set** — `kvstore_client_testcase <ip> 8050 5` inserts 500 000
   keys, each with a 1 KB value (`testcase_set`).
@@ -389,25 +390,62 @@ cleared beforehand, driven through the test harness:
 
 Memory is reported as **virtual** (`VmSize`) and **physical / resident**
 (`VmRSS`), sampled just after the server binds (start), after the full set is
-loaded (peak), and after every key is deleted (end).
+loaded (peak), and three seconds after the last key is deleted (end).
 
 | Allocator | Metric | Start (MB) | Peak / full set (MB) | End / after DEL (MB) |
 | --- | --- | --- | --- | --- |
-| No pool (glibc `malloc`) | Virtual (`VmSize`) | 94.48 | 653.52 | 653.52 |
-| No pool (glibc `malloc`) | Physical (`VmRSS`) | 91.43 | 650.82 | 650.82 |
-| Custom pool (`-DENABLE_MEMORY_POOL=ON`) | Virtual (`VmSize`) | 94.51 | 716.23 | 716.23 |
-| Custom pool (`-DENABLE_MEMORY_POOL=ON`) | Physical (`VmRSS`) | 91.53 | 713.50 | 713.51 |
-| tcmalloc (`-DENABLE_TCMALLOC=ON`) | Virtual (`VmSize`) | 105.21 | 724.21 | 724.21 |
-| tcmalloc (`-DENABLE_TCMALLOC=ON`) | Physical (`VmRSS`) | 99.50 | 721.40 | 721.40 |
+| No pool (glibc `malloc`) | Virtual (`VmSize`) | 96.78 | 646.20 | 646.16 |
+| No pool (glibc `malloc`) | Physical (`VmRSS`) | 93.02 | 642.62 | 642.61 |
+| Custom pool (`-DENABLE_MEMORY_POOL=ON`) | Virtual (`VmSize`) | 96.81 | 718.53 | 718.54 |
+| Custom pool (`-DENABLE_MEMORY_POOL=ON`) | Physical (`VmRSS`) | 93.03 | 714.80 | 714.81 |
+| tcmalloc (`-DENABLE_TCMALLOC=ON`) | Virtual (`VmSize`) | 107.51 | 711.52 | 711.52 |
+| tcmalloc (`-DENABLE_TCMALLOC=ON`) | Physical (`VmRSS`) | 98.36 | 706.90 | 706.90 |
+| jemalloc (`-DENABLE_JEMALLOC=ON`) | Virtual (`VmSize`) | 107.57 | 804.58 | 804.58 |
+| jemalloc (`-DENABLE_JEMALLOC=ON`) | Physical (`VmRSS`) | 99.74 | 756.73 | **133.96** |
 
-> After the full working set is deleted, none of the three allocators return the
-> freed physical pages to the OS — resident memory stays at its peak. glibc
-> `malloc` is the most compact; the custom pool (713 MB) and tcmalloc (721 MB)
-> land within ~10% of it. The custom pool uses **sub-octave size classes** — each
-> power-of-two octave is split into 8 evenly spaced classes (≤12.5% internal
-> fragmentation) — so a 1 KB value takes a 1152 B block instead of the 2048 B a
-> pure power-of-two scheme would use (which previously pushed its peak to
-> ~1132 MB).
+Subtracting the start baseline isolates the resident cost of the 500 000-key
+working set and shows how much of it survives the deletes:
+
+| Allocator | Working set (peak − start) | Retained after DEL (end − start) | Returned to the OS |
+| --- | --- | --- | --- |
+| No pool (glibc `malloc`) | 549.6 MB | 549.6 MB | 0% |
+| Custom pool | 621.8 MB | 621.8 MB | 0% |
+| tcmalloc | 608.5 MB | 608.5 MB | 0% |
+| jemalloc | 657.0 MB | 34.2 MB | **94.8%** |
+
+**None of this is a leak.** Every node destructor runs and every `key` / `value`
+string is handed back to its allocator — Valgrind reports zero lost bytes for the
+same insert/delete workload. What the table actually measures is whether an
+allocator *returns* freed pages to the kernel:
+
+- **glibc `malloc`** parks freed 1 KB chunks in its bins. They are well below
+  `MMAP_THRESHOLD` (128 KB), so they live in the `brk` heap, and `brk` can only
+  shrink when the *top* of the heap is contiguously free. Calling `malloc_trim(0)`
+  after the deletes drops RSS back to the start baseline, confirming the memory is
+  free — just not unmapped.
+- **The custom pool** and **tcmalloc** are pool allocators by design: `free()`
+  hands a block back to a thread cache / central free list / span, never to the
+  OS. Note that the CMake rule prefers `libtcmalloc_minimal`, which has no
+  background page-release thread.
+- **jemalloc** is the only allocator that releases pages on its own. Its
+  decay-based purging `madvise(MADV_DONTNEED)`s dirty extents a few seconds after
+  they fall idle, so `VmRSS` collapses to 134 MB while `VmSize` stays at 804 MB —
+  the virtual mappings are kept for reuse and only the physical pages are dropped.
+  The price is the highest peak of the four (~18% above glibc).
+
+Peak footprint ranks glibc (643 MB) < tcmalloc (707 MB) < custom pool (715 MB) <
+jemalloc (757 MB), all within ~18% of each other. The custom pool uses
+**sub-octave size classes** — each power-of-two octave is split into 8 evenly
+spaced classes (≤12.5% internal fragmentation) — so a 1 KB value takes a 1152 B
+block instead of the 2048 B a pure power-of-two scheme would use (which
+previously pushed its peak to ~1132 MB).
+
+Container nodes are drawn from the slab **only when the pool is compiled in**:
+[memory/slab.hpp](memory/slab.hpp) resolves `KV_NODE_ALLOC` / `KV_NODE_FREE` to
+`memory::Slab<T>` under `ENABLE_MEMORY_POOL` and to `allocator::kv_malloc` /
+`allocator::kv_free` otherwise. The slab never unmaps its 4 KB pages, so routing
+nodes through plain `malloc` in a no-pool build both lowers the peak and stops
+~64 MB of permanently pinned pages from anchoring the top of the heap.
 
 ---
 
