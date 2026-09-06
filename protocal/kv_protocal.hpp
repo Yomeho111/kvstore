@@ -595,6 +595,8 @@ namespace kv_protocal
     using KvStoreProtocal = KvProtocal<kv_engine::HashEngine>;
 #elif defined(SKIPLIST_ENGINE)
     using KvStoreProtocal = KvProtocal<kv_engine::SkiplistEngine>;
+#else
+    using KvStoreProtocal = KvProtocal<kv_engine::RbtreeEngine>;
 #endif
 } // namespace kv_protocal
 
