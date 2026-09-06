@@ -20,7 +20,7 @@
 #include "skiplist_engine/skiplist_engine.h"
 #include "allocator.h"
 #include "kv_header.h"
-#include "replicate.h"
+#include "kv_persistent.h"
 
 // #define MAX_BODY_SIZE 4096
 #define MAX_TOKEN_SIZE 2
@@ -33,8 +33,6 @@ namespace kv_protocal
     class KvProtocal
     {
     public:
-        friend class replicate::FullSyncObject;
-
         static KvProtocal &instance()
         {
             static KvProtocal prot;
@@ -47,10 +45,14 @@ namespace kv_protocal
             return prot;
         }
 
-        // Trigger an RDB snapshot of the whole dataset (used by the SIGUSR1 handler).
-        int save()
+        int save(bool for_temp = false)
         {
-            return _engine.save();
+            return _engine.save(for_temp);
+        }
+
+        void remove_tmp_file()
+        {
+            _engine.remove_temp_file();
         }
 
         int process_num_request(struct network::StatusM *status, uint32_t num_request)
@@ -159,7 +161,7 @@ namespace kv_protocal
         // hiredis reader in the reactor). The RESP-encoded reply is appended to
         // `out`. Returns 0 normally, or 1 if the connection should be closed
         // after the reply is sent (QUIT).
-        int process_resp_command(int argc, char **argv, size_t *argvlen, std::string &out)
+        int process_resp_command(int argc, char **argv, size_t *argvlen, string &out)
         {
             if (argc <= 0 || argv == nullptr || argvlen == nullptr || argv[0] == nullptr)
             {
@@ -371,76 +373,17 @@ namespace kv_protocal
                 out += "*0\r\n"; // empty array
                 return 0;
             }
+            else if (strcmp(cmd, "SAVE") == 0)
+            {
+                if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::RDB)
+                {
+                    _engine.save();
+                    out += "+OK\r\n";
+                    return 0;
+                }
+            }
 
             out += "-ERR unknown command\r\n";
-            return 0;
-        }
-
-        int process_sync_payload(char *buffer, size_t size)
-        {
-            size_t idx{0};
-            char *cur_buf = buffer;
-
-            if (!buffer || size == 0)
-                return -1;
-
-            while (idx < size)
-            {
-                uint16_t command{kv_protocal::KVS_START};
-                size_t key_len{0};
-                size_t val_len{0};
-
-                char *key{nullptr};
-                char *value{nullptr};
-
-                if (size - idx < sizeof(uint16_t))
-                {
-                    return -1;
-                }
-                memcpy(&command, cur_buf, sizeof(uint16_t));
-                idx += sizeof(uint16_t);
-                cur_buf += sizeof(uint16_t);
-
-                if (size - idx < sizeof(size_t))
-                {
-                    return -1;
-                }
-
-                memcpy(&key_len, cur_buf, sizeof(size_t));
-                idx += sizeof(size_t);
-                cur_buf += sizeof(size_t);
-
-                if (key_len == 0)
-                    return -1;
-
-                if (size - idx < sizeof(size_t))
-                {
-                    return -1;
-                }
-
-                memcpy(&val_len, cur_buf, sizeof(size_t));
-                idx += sizeof(size_t);
-                cur_buf += sizeof(size_t);
-
-                if (size - idx < key_len)
-                {
-                    return -1;
-                }
-
-                key = cur_buf;
-                idx += key_len;
-                cur_buf += key_len;
-
-                if (size - idx < val_len)
-                    return -1;
-
-                value = cur_buf;
-                idx += val_len;
-                cur_buf += val_len;
-
-                if (_process_sync_payload(command, key_len, key, val_len, value) < 0)
-                    return -2;
-            }
             return 0;
         }
 
@@ -449,52 +392,23 @@ namespace kv_protocal
             return _engine.size();
         }
 
+        int load_snapshot(const string &file_path_str)
+        {
+            return _engine.load_snapshot(file_path_str);
+        }
+
     private:
         KvProtocal() {}
         ~KvProtocal() {}
 
-        int _process_sync_payload(uint16_t command, size_t key_length, const char *key, size_t value_length, const char *value)
-        {
-            if (key_length == 0 || !key)
-                return -1;
-
-            int ret{0};
-
-            switch (command)
-            {
-                case KVS_SET:
-                {
-                    ret = _engine.set(key, key_length, value, value_length);
-                    if (ret > 0)
-                        ret = _engine.modify(key, key_length, value, value_length);
-                    break;
-                }
-                case KVS_MOD:
-                {
-                    ret = _engine.modify(key, key_length, value, value_length);
-                    break;
-                }
-                case KVS_DEL:
-                {
-                    ret = _engine.del(key, key_length);
-                    break;
-                }
-                default:
-                    ret = -2;
-                    break;
-            }
-
-            return ret;
-        }
-
-        static void _resp_append_int(std::string &out, long long v)
+        static void _resp_append_int(string &out, long long v)
         {
             char buf[32];
             int n = snprintf(buf, sizeof(buf), ":%lld\r\n", v);
             out.append(buf, n);
         }
 
-        static void _resp_append_bulk(std::string &out, const char *data, size_t len)
+        static void _resp_append_bulk(string &out, const char *data, size_t len)
         {
             char hdr[32];
             int n = snprintf(hdr, sizeof(hdr), "$%zu\r\n", len);

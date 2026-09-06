@@ -8,8 +8,7 @@
 #include <string>
 #include "hiredis.h"
 
-#define HEARTBEAT_INTERVAL_MS 2000
-#define RESP_RECV_BUF_SIZE 16384
+#define RESP_RECV_BUF_SIZE 32768
 #define RESP_MAX_ARGS 64
 
 namespace hpc_coroutine
@@ -85,17 +84,22 @@ namespace hpc_coroutine
             return;
         }
 
-        char buf[RESP_RECV_BUF_SIZE];
+        char *buf = (char *)allocator::kv_malloc(RESP_RECV_BUF_SIZE);
+        if (!buf)
+        {
+            close(fd);
+            return;
+        }
         while (1)
         {
-            int n = recv(fd, buf, sizeof(buf), 0);
+            int n = recv(fd, buf, RESP_RECV_BUF_SIZE, 0);
             if (n <= 0)
                 break;
 
             if (redisReaderFeed(reader, buf, n) != REDIS_OK)
                 break;
 
-            std::string out;
+            string out;
             bool close_after = false;
             void *reply = nullptr;
 
@@ -149,6 +153,7 @@ namespace hpc_coroutine
 
         redisReaderFree(reader);
         close(fd);
+        allocator::kv_free(buf);
     }
 
     void server_process(int fd)
@@ -322,7 +327,7 @@ namespace hpc_coroutine
             }
 #endif
             // printf("new client comming\n");
-            hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server_process, cli_fd);
+            hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(resp_server_process, cli_fd);
         }
     }
 } // namespace hpc_coroutine

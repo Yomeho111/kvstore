@@ -14,9 +14,11 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <charconv>
 
 #include "kv_header.h"
 #include "crc32.h"
+#include "allocator.h"
 
 namespace kv_persistent
 {
@@ -30,6 +32,88 @@ namespace kv_persistent
     constexpr const char *RDB_FOLDER{"rdb_data"};
     constexpr const char *RDB_FILE{"kv_0.rdt"};
     constexpr const char *RDB_TMP{"kv_0.rdt.tmp"};
+
+    static inline size_t decimal_digits(size_t n)
+    {
+        size_t digits = 1;
+
+        while (n >= 10)
+        {
+            n /= 10;
+            ++digits;
+        }
+
+        return digits;
+    }
+
+    static inline char *write_size_t(char *p, size_t value)
+    {
+        auto [ptr, ec] = std::to_chars(p, p + 32, value);
+        return ptr;
+    }
+
+    static size_t get_resp_size(const size_t command_len, size_t key_len, size_t value_len)
+    {
+        // "*3\r\n"
+        size_t total_size = 14 + command_len + key_len + decimal_digits(command_len) + decimal_digits(key_len);
+
+        if (value_len > 0)
+            total_size += decimal_digits(value_len) + 5 + value_len;
+
+        return total_size;
+    }
+
+    static int format_resp(
+        const char *command,
+        const size_t command_size,
+        const string &key,
+        const string &value,
+        char *p)
+    {
+        /*
+         * RESP:
+         *
+         * *3\r\n
+         * $<command_len>\r\n
+         * command\r\n
+         * $<key_len>\r\n
+         * key\r\n
+         * $<value_len>\r\n
+         * value\r\n
+         */
+
+        if (command_size == 0 || key.size() == 0)
+            return -1;
+
+        if (value.size() == 0)
+            memcpy(p, "*2\r\n", 4);
+        else
+            memcpy(p, "*3\r\n", 4);
+        p += 4;
+
+        auto write_bulk_string = [&p](const string &str)
+        {
+            *p++ = '$';
+
+            p = write_size_t(p, str.size());
+
+            *p++ = '\r';
+            *p++ = '\n';
+
+            memcpy(p, str.data(), str.size());
+            p += str.size();
+
+            *p++ = '\r';
+            *p++ = '\n';
+        };
+
+        write_bulk_string(command);
+        write_bulk_string(key);
+        if (!value.empty())
+            write_bulk_string(value);
+
+        return 0;
+    }
 
     static bool parse_store_file_index(const fs::path &file_path, int *file_idx)
     {
@@ -57,6 +141,77 @@ namespace kv_persistent
         return true;
     }
 
+    struct resp_field
+    {
+        const char *data;
+        size_t len;
+    };
+
+    // Parses "*<n>\r\n" followed by n bulk strings. The fields point into `data`.
+    // Returns the number of fields parsed, or -1 when the payload is malformed.
+    static int parse_resp_array(const char *data, size_t size, resp_field *out, int max_fields)
+    {
+        size_t offset = 0;
+
+        // reads a decimal number terminated by CRLF and steps past the CRLF
+        auto read_length = [&](size_t *value) -> bool
+        {
+            size_t begin = offset;
+            while (offset < size && data[offset] != '\r')
+                ++offset;
+
+            if (offset == begin || offset + 1 >= size || data[offset + 1] != '\n')
+                return false;
+
+            auto [ptr, ec] = std::from_chars(data + begin, data + offset, *value);
+            if (ec != std::errc() || ptr != data + offset)
+                return false;
+
+            offset += 2;
+            return true;
+        };
+
+        if (offset >= size || data[offset] != '*')
+            return -1;
+        ++offset;
+
+        size_t count = 0;
+        if (!read_length(&count) || count == 0 || count > static_cast<size_t>(max_fields))
+            return -1;
+
+        for (size_t i = 0; i < count; ++i)
+        {
+            if (offset >= size || data[offset] != '$')
+                return -1;
+            ++offset;
+
+            size_t len = 0;
+            if (!read_length(&len) || len > size - offset)
+                return -1;
+
+            out[i].data = data + offset;
+            out[i].len = len;
+            offset += len;
+
+            if (offset + 1 >= size || data[offset] != '\r' || data[offset + 1] != '\n')
+                return -1;
+            offset += 2;
+        }
+
+        return static_cast<int>(count);
+    }
+
+    static int command_from_str(const char *data, size_t len)
+    {
+        for (size_t i = 0; i < sizeof(kv_protocal::command_str) / sizeof(kv_protocal::command_str[0]); ++i)
+        {
+            const char *name = kv_protocal::command_str[i];
+            if (strlen(name) == len && memcmp(name, data, len) == 0)
+                return static_cast<int>(i);
+        }
+        return kv_protocal::KVS_INVALID;
+    }
+
     int StoreEngine::dump_record(CommandType command, const string &key, const string &value)
     {
         size_t key_len = key.size();
@@ -71,7 +226,9 @@ namespace kv_persistent
         }
 
         uint32_t crc = 0;
-        size_t buffer_size = sizeof(MAGIC) + sizeof(crc) + sizeof(command) + sizeof(key_len) + key_len + sizeof(val_len) + val_len;
+        size_t command_size = strnlen(kv_protocal::command_str[command], 32);
+        size_t resp_size = get_resp_size(command_size, key.size(), value.size());
+        size_t buffer_size = sizeof(MAGIC) + sizeof(crc) + sizeof(resp_size) + resp_size;
 
         char *buffer = (char *)allocator::kv_malloc(buffer_size);
         if (!buffer)
@@ -90,27 +247,12 @@ namespace kv_persistent
         // the crc32 covers everything from here to the end of the record (command .. value)
         char *payload = cur;
 
-        // write command
-        memcpy(cur, &command, sizeof(command));
-        cur += sizeof(command);
+        // write resp_size
+        memcpy(cur, &resp_size, sizeof(resp_size));
+        cur += sizeof(resp_size);
 
-        // write key_len
-        memcpy(cur, &key_len, sizeof(key_len));
-        cur += sizeof(key_len);
-
-        // write key
-        memcpy(cur, key.data(), key_len);
-        cur += key_len;
-
-        // write value_len
-        memcpy(cur, &val_len, sizeof(val_len));
-        cur += sizeof(val_len);
-
-        // write value
-        if (val_len > 0)
-        {
-            memcpy(cur, value.data(), val_len);
-        }
+        // format resp
+        format_resp(kv_protocal::command_str[command], command_size, key, value, cur);
 
         // compute the crc32 over the payload and store it right after the magic
         crc = checksum::crc32(payload, buffer_size - sizeof(MAGIC) - sizeof(crc));
@@ -258,10 +400,7 @@ namespace kv_persistent
         {
             uint32_t magic = 0;
             uint32_t stored_crc = 0;
-            uint32_t computed_crc = checksum::CRC32_INIT;
-            CommandType command = 0;
-            size_t key_len = 0;
-            size_t val_len = 0;
+            size_t resp_size = 0;
 
             if (!read_at(&magic, sizeof(magic)))
             {
@@ -274,79 +413,69 @@ namespace kv_persistent
                 break;
             }
 
-            // the crc32 is stored right after the magic and covers command .. value
             if (!read_at(&stored_crc, sizeof(stored_crc)))
             {
                 rc = -3;
                 break;
             }
 
-            if (!read_at(&command, sizeof(command)))
+            // the crc32 covers the length prefix together with the RESP payload
+            const char *payload = data + offset;
+            if (!read_at(&resp_size, sizeof(resp_size)))
             {
                 rc = -3;
                 break;
             }
-            computed_crc = checksum::crc32_update(computed_crc, &command, sizeof(command));
 
-            if (!read_at(&key_len, sizeof(key_len)))
-            {
-                rc = -3;
-                break;
-            }
-            computed_crc = checksum::crc32_update(computed_crc, &key_len, sizeof(key_len));
-
-            // a valid key must be non-empty and fit within the bytes left in the file
-            if (key_len == 0 || key_len > size - offset)
+            if (resp_size == 0 || resp_size > size - offset)
             {
                 rc = -4;
                 break;
             }
-            const char *key = data + offset;
-            offset += key_len;
-            computed_crc = checksum::crc32_update(computed_crc, key, key_len);
+            const char *resp = data + offset;
+            offset += resp_size;
 
-            if (!read_at(&val_len, sizeof(val_len)))
-            {
-                rc = -3;
-                break;
-            }
-            computed_crc = checksum::crc32_update(computed_crc, &val_len, sizeof(val_len));
-
-            // the value must also fit within the remaining bytes of the file
-            if (val_len > size - offset)
-            {
-                rc = -4;
-                break;
-            }
-            const char *value = nullptr;
-            if (val_len > 0)
-            {
-                value = data + offset;
-                offset += val_len;
-                computed_crc = checksum::crc32_update(computed_crc, value, val_len);
-            }
-
-            // the recomputed crc32 must match the stored one, otherwise the record is corrupt
-            if (checksum::crc32_final(computed_crc) != stored_crc)
+            if (checksum::crc32(payload, sizeof(resp_size) + resp_size) != stored_crc)
             {
                 rc = -7;
                 break;
             }
 
-            // the engine copies key/value into its own storage, so passing pointers
-            // into the read-only mapping is safe
-            int ret = 0;
-            if (command == kv_protocal::KVS_SET)
-                ret = engine->set(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, false);
-            else if (command == kv_protocal::KVS_DEL)
-                ret = engine->del(const_cast<char *>(key), key_len, false);
-            else if (command == kv_protocal::KVS_MOD)
-                ret = engine->modify(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, false);
-            else
+            // [0] command, [1] key, [2] value (absent when the value is empty)
+            resp_field fields[3];
+            int field_count = parse_resp_array(resp, resp_size, fields, 3);
+            if (field_count < 2 || fields[1].len == 0)
             {
                 rc = -4;
                 break;
             }
+
+            const char *key = fields[1].data;
+            size_t key_len = fields[1].len;
+            const char *value = field_count > 2 ? fields[2].data : nullptr;
+            size_t val_len = field_count > 2 ? fields[2].len : 0;
+
+            // the engine copies key/value into its own storage, so passing pointers
+            // into the read-only mapping is safe
+            int ret = 0;
+            switch (command_from_str(fields[0].data, fields[0].len))
+            {
+                case kv_protocal::KVS_SET:
+                    ret = engine->set(key, key_len, value, val_len, nullptr, false);
+                    break;
+                case kv_protocal::KVS_DEL:
+                    ret = engine->del(key, key_len, false);
+                    break;
+                case kv_protocal::KVS_MOD:
+                    ret = engine->modify(key, key_len, value, val_len, nullptr, false);
+                    break;
+                default:
+                    rc = -4;
+                    break;
+            }
+
+            if (rc != 0)
+                break;
 
             if (ret != 0)
             {
@@ -509,11 +638,8 @@ namespace kv_persistent
         if (key_len == 0)
             return -1;
 
-        const CommandType command = kv_protocal::KVS_SET;
-
         // crc32 over command .. value, computed incrementally without allocating
         uint32_t crc = checksum::CRC32_INIT;
-        crc = checksum::crc32_update(crc, &command, sizeof(command));
         crc = checksum::crc32_update(crc, &key_len, sizeof(key_len));
         crc = checksum::crc32_update(crc, key.data(), key_len);
         crc = checksum::crc32_update(crc, &val_len, sizeof(val_len));
@@ -550,8 +676,6 @@ namespace kv_persistent
         cur += sizeof(MAGIC);
         memcpy(cur, &crc, sizeof(crc));
         cur += sizeof(crc);
-        memcpy(cur, &command, sizeof(command));
-        cur += sizeof(command);
         memcpy(cur, &key_len, sizeof(key_len));
         memcpy(slot->vlen, &val_len, sizeof(val_len));
 
@@ -625,13 +749,13 @@ namespace kv_persistent
         fs::remove(fs::path{RDB_FOLDER} / RDB_TMP, ec);
     }
 
-    int SnapshotEngine::load(kv_engine::EngineInterfaceBase *engine)
+    int SnapshotEngine::load(kv_engine::EngineInterfaceBase *engine, const string &file_path_str)
     {
         if (engine == nullptr)
             return -1;
 
         std::error_code ec;
-        fs::path file_path = fs::path{RDB_FOLDER} / RDB_FILE;
+        fs::path file_path{file_path_str};
 
         if (!fs::exists(file_path, ec))
         {
@@ -674,7 +798,6 @@ namespace kv_persistent
             uint32_t magic = 0;
             uint32_t stored_crc = 0;
             uint32_t computed_crc = checksum::CRC32_INIT;
-            CommandType command = 0;
             size_t key_len = 0;
             size_t val_len = 0;
 
@@ -694,13 +817,6 @@ namespace kv_persistent
                 rc = -3;
                 break;
             }
-
-            if (!read_at(&command, sizeof(command)))
-            {
-                rc = -3;
-                break;
-            }
-            computed_crc = checksum::crc32_update(computed_crc, &command, sizeof(command));
 
             if (!read_at(&key_len, sizeof(key_len)))
             {
@@ -745,17 +861,8 @@ namespace kv_persistent
             }
 
             int ret = 0;
-            if (command == kv_protocal::KVS_SET)
-                ret = engine->set(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, false);
-            else if (command == kv_protocal::KVS_DEL)
-                ret = engine->del(const_cast<char *>(key), key_len, false);
-            else if (command == kv_protocal::KVS_MOD)
-                ret = engine->modify(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, false);
-            else
-            {
-                rc = -4;
-                break;
-            }
+
+            ret = engine->set(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, false);
 
             if (ret != 0)
             {

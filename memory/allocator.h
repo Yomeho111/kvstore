@@ -79,4 +79,9 @@ namespace allocator
     }
 } // namespace allocator
 
+using string = std::basic_string<
+    char,
+    std::char_traits<char>,
+    allocator::MyAllocator<char>>;
+
 #endif // __ALLOCATOR_H

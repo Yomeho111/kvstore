@@ -1,13 +1,13 @@
-#ifdef REACTOR
-#include "reactor/reactor.h"
-#elif defined(PROACTOR)
-#include "proactor/uring_tcp.h"
-#elif defined(COROUTINE)
+// #ifdef REACTOR
+// #include "reactor/reactor.h"
+// #elif defined(PROACTOR)
+// #include "proactor/uring_tcp.h"
+// #elif defined(COROUTINE)
+// #include "my_coroutine/coroutine_server.h"
+// #endif
 #include "my_coroutine/coroutine_server.h"
-#endif
 
 #include "kv_protocal.hpp"
-#include "replicate.h"
 #include "kv_config.h"
 #include "kv_log.h"
 
@@ -25,9 +25,6 @@ void handler(int sig)
 {
     const char msg[] = "Close the server\n";
     (void)!write(STDOUT_FILENO, msg, sizeof(msg) - 1);
-    // exit() rather than _exit() so static/TLS destructors and _dl_fini run and the
-    // process leaves nothing allocated. It is not async-signal-safe, and in the
-    // master/slave roles it can block joining the replication thread.
     exit(sig);
 }
 
@@ -105,8 +102,8 @@ int main(int argc, char *argv[])
 
     is_slave = cfg.role == kv_config::Role::SLAVE;
 
-    // A slave tracks updates locally too, so it can be promoted later.
-    replicate::g_replicate = cfg.role != kv_config::Role::STANDALONE;
+    // // A slave tracks updates locally too, so it can be promoted later.
+    // replicate::g_replicate = cfg.role != kv_config::Role::STANDALONE;
 
     KV_INFO("kvstore starting: config=%s port=%u role=%s persistence=%s log_level=%s",
             config_path,
@@ -117,59 +114,28 @@ int main(int argc, char *argv[])
 
     auto &prot = kv_protocal::KvStoreProtocal::instance();
 
-    // In RDB mode a snapshot is taken on demand: send SIGUSR1 (e.g. `kill -USR1 <pid>`)
-    // and a dedicated thread forks a child to dump the dataset via save().
-    if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::RDB)
-    {
-        signal(SIGCHLD, SIG_DFL); // allow waitpid() to reap the snapshot child
-        signal(SIGUSR1, SIG_DFL);
-
-        sigset_t save_set;
-        sigemptyset(&save_set);
-        sigaddset(&save_set, SIGUSR1);
-        pthread_sigmask(SIG_BLOCK, &save_set, nullptr);
-
-        std::thread(
-            [&prot]()
-            {
-                sigset_t wait_set;
-                sigemptyset(&wait_set);
-                sigaddset(&wait_set, SIGUSR1);
-                int sig = 0;
-                while (sigwait(&wait_set, &sig) == 0)
-                    prot.save();
-            })
-            .detach();
-    }
-
-    // Load the eBPF delta tracer before serving traffic. It exits the process on
-    // failure and is otherwise first reached from inside the engine lock, where
-    // exiting deadlocks against the replication thread waiting on that same lock.
-    if (replicate::g_replicate)
-        replicate::DeltaSyncObject::instance();
-
     if (is_slave)
     {
-        auto &slave = replicate::SlaveServer::instance(cfg.master_port, cfg.master_ip.c_str());
-        slave.server_loop();
+        // slave server
     }
     else
     {
-        if (replicate::g_replicate)
-            replicate::MasterServer::instance().start();
-#ifdef REACTOR
-        reactor::TcpServers servers(cfg.port);
-        servers.init();
-        servers.start_eventloop();
-#elif defined(PROACTOR)
-        proactor::TcpServers servers(cfg.port);
-        servers.init();
-        servers.start_eventloop();
-#elif defined(COROUTINE)
+        // #ifdef REACTOR
+        //         reactor::TcpServers servers(cfg.port);
+        //         servers.init();
+        //         servers.start_eventloop();
+        // #elif defined(PROACTOR)
+        //         proactor::TcpServers servers(cfg.port);
+        //         servers.init();
+        //         servers.start_eventloop();
+        // #elif defined(COROUTINE)
+        //         hpc_coroutine::TcpServers servers(cfg.port);
+        //         servers.init();
+        //         servers.start_eventloop();
+        // #endif
         hpc_coroutine::TcpServers servers(cfg.port);
         servers.init();
         servers.start_eventloop();
-#endif
     }
 
     return 0;

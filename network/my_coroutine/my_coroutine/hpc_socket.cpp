@@ -174,8 +174,6 @@ int accept(int fd, struct sockaddr *addr, socklen_t *len)
         close(sockfd);
         return -1;
     }
-    int reuse = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char *)&reuse, sizeof(reuse));
 
     return sockfd;
 }

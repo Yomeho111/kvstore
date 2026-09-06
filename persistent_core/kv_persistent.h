@@ -8,11 +8,6 @@
 #include "engine_interface_base.h"
 #include "allocator.h"
 
-using string = std::basic_string<
-    char,
-    std::char_traits<char>,
-    allocator::MyAllocator<char>>;
-
 namespace kv_persistent
 {
     namespace fs = std::filesystem;
@@ -27,6 +22,8 @@ namespace kv_persistent
 
     // Global persistence mode, defaults to in-memory only. Set from main().
     inline PersistMode g_persist_mode = PersistMode::NONE;
+
+    inline constexpr const char *RDB_DEFAULT_PATH{"rdb_data/kv_0.rdt"};
 
     class StoreEngine
     {
@@ -81,13 +78,11 @@ namespace kv_persistent
     // fork-safe.
     class SnapshotEngine
     {
-        using CommandType = uint16_t;
-
         // io_uring pipeline depth: up to this many record writes are kept in flight.
         static constexpr unsigned RDB_DEPTH = 64;
-        // fixed record header size: [MAGIC][CRC32][COMMAND][KEY_LEN]
+        // fixed record header size: [MAGIC][CRC32][KEY_LEN]
         static constexpr size_t RDB_HDR_LEN =
-            sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint16_t) + sizeof(size_t);
+            sizeof(uint32_t) + sizeof(uint32_t) + sizeof(size_t);
 
         // per-in-flight scratch: one writev (header + key + val_len + value) plus the
         // small fixed buffers it points at. Sized to RDB_DEPTH so a slot is reused only
@@ -114,7 +109,7 @@ namespace kv_persistent
         int child_finish();                                      // drain in-flight writes + fdatasync
 
         // load (parent, at startup)
-        int load(kv_engine::EngineInterfaceBase *engine);
+        int load(kv_engine::EngineInterfaceBase *engine, const string &file_path_str);
 
     private:
         SnapshotEngine(const SnapshotEngine &) = delete;

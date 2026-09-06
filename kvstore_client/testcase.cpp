@@ -1,280 +1,296 @@
-#include "client.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <algorithm>
 #include <string>
-#include <vector>
 
-#include "allocator.h"
 #include "hiredis.h"
 
 #define N 500000
 
 #define TIME_SUB_MS(tv1, tv2) ((tv1.tv_sec - tv2.tv_sec) * 1000 + (tv1.tv_usec - tv2.tv_usec) / 1000)
 
-using string = std::basic_string<
-    char,
-    std::char_traits<char>,
-    allocator::MyAllocator<char>>;
+// How many commands are pipelined before the replies are drained.
+constexpr int BATCH_SIZE = 128;
 
-void batch_testcase(kv_client::KvClient &client, const kv_client::KvRequest *requests, const char **patterns, uint32_t count, const char *casename)
+constexpr int UNIQUE_KV_COUNT = 100000;
+constexpr size_t LARGE_VALUE_LEN = 13000;
+
+// ===========================================================================
+// RESP plumbing. Every testcase pipelines a batch of commands with
+// redisAppendCommand and then drains the replies through the expect_* helpers,
+// which abort the whole run on the first mismatch so scripts see a non-zero
+// exit status.
+// ===========================================================================
+
+static redisContext *resp_connect(const char *ip, uint16_t port)
 {
-    if (requests == nullptr || patterns == nullptr || count == 0 || casename == nullptr)
-        return;
-
-    kv_client::KvBatchResponse response{};
-    if (client.submit_batch(requests, count, &response) != 0)
+    redisContext *c = redisConnect(ip, port);
+    if (c == nullptr || c->err)
     {
-        printf("==> FAILED -> %s, no batch response\n", casename);
+        printf("==> FAILED -> resp connect: %s\n", c ? c->errstr : "cannot allocate context");
+        if (c)
+            redisFree(c);
         exit(1);
     }
-
-    if (response.num_response != count)
-    {
-        printf("==> FAILED -> %s, response count %u != %u\n", casename, response.num_response, count);
-        kv_client::KvClient::free_batch_response(&response);
-        exit(1);
-    }
-
-    for (uint32_t i = 0; i < count; i++)
-    {
-        if (strcmp(response.responses[i].data, patterns[i]) != 0)
-        {
-            printf("==> FAILED -> %s[%u], '%s' != '%s' \n", casename, i, response.responses[i].data, patterns[i]);
-            kv_client::KvClient::free_batch_response(&response);
-            exit(1);
-        }
-    }
-
-    kv_client::KvClient::free_batch_response(&response);
+    return c;
 }
 
-void testcase1(kv_client::KvClient &client)
+static void resp_abort(redisContext *c, redisReply *reply, const char *casename, const char *detail)
 {
-    kv_client::KvRequest requests[] = {
-        {"SET", "Teacher", "King"},
-        {"GET", "Teacher", ""},
-        {"MOD", "Teacher", "Darren"},
-        {"GET", "Teacher", ""},
-        {"EXIST", "Teacher", ""},
-        {"DEL", "Teacher", ""},
-        {"GET", "Teacher", ""},
-        {"MOD", "Teacher", "KING"},
-        {"EXIST", "Teacher", ""},
-    };
-    const char *patterns[] = {
-        "OK\r\n",
-        "King\r\n",
-        "OK\r\n",
-        "Darren\r\n",
-        "EXIST\r\n",
-        "OK\r\n",
-        "NOT EXIST\r\n",
-        "NOT EXIST\r\n",
-        "NOT EXIST\r\n",
-    };
-
-    batch_testcase(client, requests, patterns, sizeof(requests) / sizeof(requests[0]), "batch-basic");
+    printf("==> FAILED -> %s, %s\n", casename, detail);
+    if (reply)
+        freeReplyObject(reply);
+    redisFree(c);
+    exit(1);
 }
 
-void testcase2(kv_client::KvClient &client)
+static redisReply *next_reply(redisContext *c, const char *casename)
 {
+    redisReply *reply = nullptr;
+    if (redisGetReply(c, (void **)&reply) != REDIS_OK || reply == nullptr)
+        resp_abort(c, reply, casename, c->errstr[0] ? c->errstr : "no reply");
 
-    static char long_value[13000];
-    for (int i = 0; i < sizeof(long_value) - 1; i++)
+    if (reply->type == REDIS_REPLY_ERROR)
+        resp_abort(c, reply, casename, reply->str);
+
+    return reply;
+}
+
+static void expect_status(redisContext *c, const char *casename, const char *expected)
+{
+    redisReply *reply = next_reply(c, casename);
+
+    if (reply->type != REDIS_REPLY_STATUS || strcmp(reply->str, expected) != 0)
     {
-        long_value[i] = 'A' + (i % 26); // A-Z pattern
+        char detail[128];
+        snprintf(detail, sizeof(detail), "expected status '%s' (type=%d)", expected, reply->type);
+        resp_abort(c, reply, casename, detail);
     }
-    long_value[sizeof(long_value) - 1] = '\0';
 
-    // Expected GET response: "<value>\r\n"
-    static char expected_get[14000];
-    snprintf(expected_get, sizeof(expected_get), "%s\r\n", long_value);
-
-    // -------- Testcases --------
-
-    kv_client::KvRequest requests[] = {
-        {"SET", "BigKey", long_value},
-        {"GET", "BigKey", ""},
-        {"MOD", "BigKey", long_value},
-        {"GET", "BigKey", ""},
-        {"EXIST", "BigKey", ""},
-        {"DEL", "BigKey", ""},
-        {"GET", "BigKey", ""},
-        {"MOD", "BigKey", long_value},
-        {"EXIST", "BigKey", ""},
-    };
-    const char *patterns[] = {
-        "OK\r\n",
-        expected_get,
-        "OK\r\n",
-        expected_get,
-        "EXIST\r\n",
-        "OK\r\n",
-        "NOT EXIST\r\n",
-        "NOT EXIST\r\n",
-        "NOT EXIST\r\n",
-    };
-
-    batch_testcase(client, requests, patterns, sizeof(requests) / sizeof(requests[0]), "batch-large-value");
+    freeReplyObject(reply);
 }
 
-void testcase_timeout(kv_client::KvClient &client)
+static void expect_bulk(redisContext *c, const char *casename, const char *expected, size_t len)
 {
-    kv_protocal::TimeoutSpec set_timeout{0, 200 * 1000 * 1000};
-    kv_protocal::TimeoutSpec mod_timeout{0, 300 * 1000 * 1000};
+    redisReply *reply = next_reply(c, casename);
 
-    kv_client::KvRequest cleanup_requests[] = {
-        {"DEL", "TimeoutSet", ""},
-        {"DEL", "TimeoutMod", ""},
-    };
+    if (reply->type != REDIS_REPLY_STRING ||
+        reply->len != len ||
+        memcmp(reply->str, expected, len) != 0)
+    {
+        char detail[128];
+        snprintf(detail, sizeof(detail), "unexpected bulk reply (type=%d, len=%zu, want %zu)",
+                 reply->type, static_cast<size_t>(reply->len), len);
+        resp_abort(c, reply, casename, detail);
+    }
 
-    kv_client::KvBatchResponse cleanup_response{};
-    if (client.submit_batch(cleanup_requests, sizeof(cleanup_requests) / sizeof(cleanup_requests[0]), &cleanup_response) == 0)
-        kv_client::KvClient::free_batch_response(&cleanup_response);
+    freeReplyObject(reply);
+}
 
-    kv_client::KvRequest set_mod_requests[] = {
-        {"SET", "TimeoutSet", "Alpha", set_timeout},
-        {"GET", "TimeoutSet", ""},
-        {"SET", "TimeoutMod", "Before"},
-        {"MOD", "TimeoutMod", "After", mod_timeout},
-        {"GET", "TimeoutMod", ""},
-        {"EXIST", "TimeoutSet", ""},
-        {"EXIST", "TimeoutMod", ""},
-    };
+static void expect_nil(redisContext *c, const char *casename)
+{
+    redisReply *reply = next_reply(c, casename);
 
-    const char *set_mod_patterns[] = {
-        "OK\r\n",
-        "Alpha\r\n",
-        "OK\r\n",
-        "OK\r\n",
-        "After\r\n",
-        "EXIST\r\n",
-        "EXIST\r\n",
-    };
+    if (reply->type != REDIS_REPLY_NIL)
+    {
+        char detail[128];
+        snprintf(detail, sizeof(detail), "expected nil (type=%d)", reply->type);
+        resp_abort(c, reply, casename, detail);
+    }
 
-    batch_testcase(client, set_mod_requests, set_mod_patterns, sizeof(set_mod_requests) / sizeof(set_mod_requests[0]), "batch-timeout-before-expire");
+    freeReplyObject(reply);
+}
+
+static void expect_integer(redisContext *c, const char *casename, long long expected)
+{
+    redisReply *reply = next_reply(c, casename);
+
+    if (reply->type != REDIS_REPLY_INTEGER || reply->integer != expected)
+    {
+        char detail[128];
+        snprintf(detail, sizeof(detail), "expected integer %lld (type=%d)", expected, reply->type);
+        resp_abort(c, reply, casename, detail);
+    }
+
+    freeReplyObject(reply);
+}
+
+// Used for cleanup commands whose result depends on what a previous run left behind.
+static void skip_reply(redisContext *c, const char *casename)
+{
+    freeReplyObject(next_reply(c, casename));
+}
+
+// RESP has no MOD command: a SET onto an existing key falls back to modify()
+// server-side, so the overwrite is what the second SET below exercises.
+static long long testcase_basic(redisContext *c)
+{
+    const char *name = "resp-basic";
+
+    redisAppendCommand(c, "DEL Teacher");
+    redisAppendCommand(c, "SET Teacher King");
+    redisAppendCommand(c, "GET Teacher");
+    redisAppendCommand(c, "SET Teacher Darren");
+    redisAppendCommand(c, "GET Teacher");
+    redisAppendCommand(c, "EXISTS Teacher");
+    redisAppendCommand(c, "DEL Teacher");
+    redisAppendCommand(c, "GET Teacher");
+    redisAppendCommand(c, "EXISTS Teacher");
+
+    skip_reply(c, name);
+    expect_status(c, name, "OK");
+    expect_bulk(c, name, "King", 4);
+    expect_status(c, name, "OK");
+    expect_bulk(c, name, "Darren", 6);
+    expect_integer(c, name, 1);
+    expect_integer(c, name, 1);
+    expect_nil(c, name);
+    expect_integer(c, name, 0);
+
+    return 9;
+}
+
+static const char *large_value()
+{
+    static char buffer[LARGE_VALUE_LEN];
+    static bool ready = false;
+
+    if (!ready)
+    {
+        for (size_t i = 0; i < sizeof(buffer); i++)
+            buffer[i] = 'A' + (i % 26);
+        ready = true;
+    }
+
+    return buffer;
+}
+
+static long long testcase_large_value(redisContext *c)
+{
+    const char *name = "resp-large-value";
+    const char *value = large_value();
+
+    redisAppendCommand(c, "DEL BigKey");
+    redisAppendCommand(c, "SET BigKey %b", value, LARGE_VALUE_LEN);
+    redisAppendCommand(c, "GET BigKey");
+    redisAppendCommand(c, "SET BigKey %b", value, LARGE_VALUE_LEN);
+    redisAppendCommand(c, "GET BigKey");
+    redisAppendCommand(c, "EXISTS BigKey");
+    redisAppendCommand(c, "DEL BigKey");
+    redisAppendCommand(c, "GET BigKey");
+    redisAppendCommand(c, "EXISTS BigKey");
+
+    skip_reply(c, name);
+    expect_status(c, name, "OK");
+    expect_bulk(c, name, value, LARGE_VALUE_LEN);
+    expect_status(c, name, "OK");
+    expect_bulk(c, name, value, LARGE_VALUE_LEN);
+    expect_integer(c, name, 1);
+    expect_integer(c, name, 1);
+    expect_nil(c, name);
+    expect_integer(c, name, 0);
+
+    return 9;
+}
+
+static long long testcase_timeout(redisContext *c)
+{
+    const char *name = "resp-timeout";
+
+    redisAppendCommand(c, "DEL TimeoutSet TimeoutMod");
+    redisAppendCommand(c, "SET TimeoutSet Alpha PX 200");
+    redisAppendCommand(c, "GET TimeoutSet");
+    redisAppendCommand(c, "SET TimeoutMod Before");
+    redisAppendCommand(c, "SET TimeoutMod After PX 300");
+    redisAppendCommand(c, "GET TimeoutMod");
+    redisAppendCommand(c, "EXISTS TimeoutSet");
+    redisAppendCommand(c, "EXISTS TimeoutMod");
+
+    skip_reply(c, name);
+    expect_status(c, name, "OK");
+    expect_bulk(c, name, "Alpha", 5);
+    expect_status(c, name, "OK");
+    expect_status(c, name, "OK");
+    expect_bulk(c, name, "After", 5);
+    expect_integer(c, name, 1);
+    expect_integer(c, name, 1);
 
     usleep(600 * 1000);
 
-    kv_client::KvRequest expired_requests[] = {
-        {"GET", "TimeoutSet", ""},
-        {"EXIST", "TimeoutSet", ""},
-        {"GET", "TimeoutMod", ""},
-        {"EXIST", "TimeoutMod", ""},
-    };
+    redisAppendCommand(c, "GET TimeoutSet");
+    redisAppendCommand(c, "EXISTS TimeoutSet");
+    redisAppendCommand(c, "GET TimeoutMod");
+    redisAppendCommand(c, "EXISTS TimeoutMod");
 
-    const char *expired_patterns[] = {
-        "NOT EXIST\r\n",
-        "NOT EXIST\r\n",
-        "NOT EXIST\r\n",
-        "NOT EXIST\r\n",
-    };
+    expect_nil(c, name);
+    expect_integer(c, name, 0);
+    expect_nil(c, name);
+    expect_integer(c, name, 0);
 
-    batch_testcase(client, expired_requests, expired_patterns, sizeof(expired_requests) / sizeof(expired_requests[0]), "batch-timeout-after-expire");
+    return 12;
 }
 
-void testcase_set(kv_client::KvClient &client)
+static const char *bulk_value()
 {
-    constexpr int BATCH_SIZE = 128;
+    return "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+           "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+}
 
-    const char *value =
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
-        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF";
+static long long testcase_set(redisContext *c)
+{
+    const char *name = "resp-set";
+    const char *value = bulk_value();
+    const size_t value_len = strlen(value);
 
     for (int begin = 1; begin <= N; begin += BATCH_SIZE)
     {
         int end = std::min(begin + BATCH_SIZE - 1, N);
-        int batch_count = end - begin + 1;
-
-        std::vector<std::string> keys;
-        std::vector<kv_client::KvRequest> requests;
-        std::vector<const char *> patterns;
-
-        keys.reserve(batch_count);
-        requests.reserve(batch_count);
-        patterns.reserve(batch_count);
 
         for (int i = begin; i <= end; ++i)
-        {
-            keys.emplace_back("key" + std::to_string(i));
+            redisAppendCommand(c, "SET key%d %b", i, value, value_len);
 
-            requests.push_back({"SET",
-                                keys.back().c_str(),
-                                value});
-
-            patterns.push_back("OK\r\n");
-        }
-
-        std::string testcase_name =
-            "batch-set-10000-" + std::to_string(begin) + "-" + std::to_string(end);
-
-        batch_testcase(
-            client,
-            requests.data(),
-            patterns.data(),
-            requests.size(),
-            testcase_name.c_str());
+        for (int i = begin; i <= end; ++i)
+            expect_status(c, name, "OK");
     }
+
+    return N;
 }
 
-void testcase_del(kv_client::KvClient &client)
+static long long testcase_del(redisContext *c)
 {
-    constexpr int BATCH_SIZE = 128;
+    const char *name = "resp-del";
 
     for (int begin = 1; begin <= N; begin += BATCH_SIZE)
     {
         int end = std::min(begin + BATCH_SIZE - 1, N);
-        int batch_count = end - begin + 1;
-
-        std::vector<std::string> keys;
-        std::vector<kv_client::KvRequest> requests;
-        std::vector<const char *> patterns;
-
-        keys.reserve(batch_count);
-        requests.reserve(batch_count);
-        patterns.reserve(batch_count);
 
         for (int i = begin; i <= end; ++i)
-        {
-            keys.emplace_back("key" + std::to_string(i));
+            redisAppendCommand(c, "DEL key%d", i);
 
-            requests.push_back({"DEL",
-                                keys.back().c_str(),
-                                ""});
-
-            patterns.push_back("OK\r\n");
-        }
-
-        std::string testcase_name =
-            "batch-del-10000-" + std::to_string(begin) + "-" + std::to_string(end);
-
-        batch_testcase(
-            client,
-            requests.data(),
-            patterns.data(),
-            requests.size(),
-            testcase_name.c_str());
+        for (int i = begin; i <= end; ++i)
+            expect_integer(c, name, 1);
     }
-}
 
-constexpr int UNIQUE_KV_COUNT = 100000;
+    return N;
+}
 
 static std::string make_unique_key(int i)
 {
@@ -286,182 +302,65 @@ static std::string make_unique_value(int i)
     return "uval" + std::to_string(i);
 }
 
-// SET UNIQUE_KV_COUNT key/value pairs, each with a distinct key and a distinct value.
-void testcase_set_unique(kv_client::KvClient &client)
+// SET the unique pairs in [first, last], each with a distinct key and value.
+static long long set_unique_range(redisContext *c, const char *name, int first, int last)
 {
-    constexpr int BATCH_SIZE = 128;
+    for (int begin = first; begin <= last; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE - 1, last);
+
+        for (int i = begin; i <= end; ++i)
+        {
+            std::string key = make_unique_key(i);
+            std::string value = make_unique_value(i);
+            redisAppendCommand(c, "SET %b %b", key.data(), key.size(), value.data(), value.size());
+        }
+
+        for (int i = begin; i <= end; ++i)
+            expect_status(c, name, "OK");
+    }
+
+    return last - first + 1;
+}
+
+static long long testcase_set_unique(redisContext *c)
+{
+    return set_unique_range(c, "resp-set-unique", 1, UNIQUE_KV_COUNT);
+}
+
+static long long testcase_set_unique_first_half(redisContext *c)
+{
+    return set_unique_range(c, "resp-set-unique-first-half", 1, UNIQUE_KV_COUNT / 2);
+}
+
+static long long testcase_set_unique_second_half(redisContext *c)
+{
+    return set_unique_range(c, "resp-set-unique-second-half", UNIQUE_KV_COUNT / 2 + 1, UNIQUE_KV_COUNT);
+}
+
+// GET the pairs written by testcase_set_unique and verify every value.
+static long long testcase_get_unique(redisContext *c)
+{
+    const char *name = "resp-get-unique";
 
     for (int begin = 1; begin <= UNIQUE_KV_COUNT; begin += BATCH_SIZE)
     {
         int end = std::min(begin + BATCH_SIZE - 1, UNIQUE_KV_COUNT);
-        int batch_count = end - begin + 1;
-
-        std::vector<std::string> keys;
-        std::vector<std::string> values;
-        std::vector<kv_client::KvRequest> requests;
-        std::vector<const char *> patterns;
-
-        keys.reserve(batch_count);
-        values.reserve(batch_count);
-        requests.reserve(batch_count);
-        patterns.reserve(batch_count);
 
         for (int i = begin; i <= end; ++i)
         {
-            keys.emplace_back(make_unique_key(i));
-            values.emplace_back(make_unique_value(i));
-
-            requests.push_back({"SET",
-                                keys.back().c_str(),
-                                values.back().c_str()});
-
-            patterns.push_back("OK\r\n");
+            std::string key = make_unique_key(i);
+            redisAppendCommand(c, "GET %b", key.data(), key.size());
         }
-
-        std::string testcase_name =
-            "batch-set-unique-" + std::to_string(begin) + "-" + std::to_string(end);
-
-        batch_testcase(
-            client,
-            requests.data(),
-            patterns.data(),
-            requests.size(),
-            testcase_name.c_str());
-    }
-}
-
-// First half of testcase_set_unique: SET ukey1 .. ukey[UNIQUE_KV_COUNT/2].
-void testcase_set_unique_first_half(kv_client::KvClient &client)
-{
-    constexpr int BATCH_SIZE = 128;
-    constexpr int HALF = UNIQUE_KV_COUNT / 2;
-
-    for (int begin = 1; begin <= HALF; begin += BATCH_SIZE)
-    {
-        int end = std::min(begin + BATCH_SIZE - 1, HALF);
-        int batch_count = end - begin + 1;
-
-        std::vector<std::string> keys;
-        std::vector<std::string> values;
-        std::vector<kv_client::KvRequest> requests;
-        std::vector<const char *> patterns;
-
-        keys.reserve(batch_count);
-        values.reserve(batch_count);
-        requests.reserve(batch_count);
-        patterns.reserve(batch_count);
 
         for (int i = begin; i <= end; ++i)
         {
-            keys.emplace_back(make_unique_key(i));
-            values.emplace_back(make_unique_value(i));
-
-            requests.push_back({"SET",
-                                keys.back().c_str(),
-                                values.back().c_str()});
-
-            patterns.push_back("OK\r\n");
+            std::string expected = make_unique_value(i);
+            expect_bulk(c, name, expected.data(), expected.size());
         }
-
-        std::string testcase_name =
-            "batch-set-unique-first-" + std::to_string(begin) + "-" + std::to_string(end);
-
-        batch_testcase(
-            client,
-            requests.data(),
-            patterns.data(),
-            requests.size(),
-            testcase_name.c_str());
     }
-}
 
-// Second half of testcase_set_unique: SET ukey[UNIQUE_KV_COUNT/2 + 1] .. ukey[UNIQUE_KV_COUNT].
-void testcase_set_unique_second_half(kv_client::KvClient &client)
-{
-    constexpr int BATCH_SIZE = 128;
-    constexpr int HALF = UNIQUE_KV_COUNT / 2;
-
-    for (int begin = HALF + 1; begin <= UNIQUE_KV_COUNT; begin += BATCH_SIZE)
-    {
-        int end = std::min(begin + BATCH_SIZE - 1, UNIQUE_KV_COUNT);
-        int batch_count = end - begin + 1;
-
-        std::vector<std::string> keys;
-        std::vector<std::string> values;
-        std::vector<kv_client::KvRequest> requests;
-        std::vector<const char *> patterns;
-
-        keys.reserve(batch_count);
-        values.reserve(batch_count);
-        requests.reserve(batch_count);
-        patterns.reserve(batch_count);
-
-        for (int i = begin; i <= end; ++i)
-        {
-            keys.emplace_back(make_unique_key(i));
-            values.emplace_back(make_unique_value(i));
-
-            requests.push_back({"SET",
-                                keys.back().c_str(),
-                                values.back().c_str()});
-
-            patterns.push_back("OK\r\n");
-        }
-
-        std::string testcase_name =
-            "batch-set-unique-second-" + std::to_string(begin) + "-" + std::to_string(end);
-
-        batch_testcase(
-            client,
-            requests.data(),
-            patterns.data(),
-            requests.size(),
-            testcase_name.c_str());
-    }
-}
-
-// GET the UNIQUE_KV_COUNT pairs written by testcase_set_unique and verify each value.
-void testcase_get_unique(kv_client::KvClient &client)
-{
-    constexpr int BATCH_SIZE = 128;
-
-    for (int begin = 1; begin <= UNIQUE_KV_COUNT; begin += BATCH_SIZE)
-    {
-        int end = std::min(begin + BATCH_SIZE - 1, UNIQUE_KV_COUNT);
-        int batch_count = end - begin + 1;
-
-        std::vector<std::string> keys;
-        std::vector<std::string> expected;
-        std::vector<kv_client::KvRequest> requests;
-        std::vector<const char *> patterns;
-
-        keys.reserve(batch_count);
-        expected.reserve(batch_count);
-        requests.reserve(batch_count);
-        patterns.reserve(batch_count);
-
-        for (int i = begin; i <= end; ++i)
-        {
-            keys.emplace_back(make_unique_key(i));
-            expected.emplace_back(make_unique_value(i) + "\r\n");
-
-            requests.push_back({"GET",
-                                keys.back().c_str(),
-                                ""});
-
-            patterns.push_back(expected.back().c_str());
-        }
-
-        std::string testcase_name =
-            "batch-get-unique-" + std::to_string(begin) + "-" + std::to_string(end);
-
-        batch_testcase(
-            client,
-            requests.data(),
-            patterns.data(),
-            requests.size(),
-            testcase_name.c_str());
-    }
+    return UNIQUE_KV_COUNT;
 }
 
 // ---------------------------------------------------------------------------
@@ -469,8 +368,8 @@ void testcase_get_unique(kv_client::KvClient &client)
 //
 //   t0        : SET TIMER_STEP_KV unique KV, each with a 1s expiration.
 //   T1 .. T5  : 1.5s after the previous step, GET the previous step's batch
-//               (every key must have expired -> "NOT EXIST") and then SET a
-//               fresh batch of TIMER_STEP_KV unique KV, again with a 1s TTL.
+//               (every key must have expired -> nil) and then SET a fresh batch
+//               of TIMER_STEP_KV unique KV, again with a 1s TTL.
 //
 // The 1.5s spacing is deliberately larger than the 1s TTL, so each batch is
 // guaranteed to be gone by the time it is read back one step later. This keeps
@@ -490,222 +389,10 @@ static std::string make_timer_value(int step, int i)
     return "tmval_" + std::to_string(step) + "_" + std::to_string(i);
 }
 
-// SET the whole batch for `step`, each key carrying a 1s expiration.
-static void timer_set_batch(kv_client::KvClient &client, int step)
+// SET the whole batch for `step`, each key carrying a 1s expiry.
+static long long timer_set_batch(redisContext *c, int step)
 {
-    constexpr int BATCH_SIZE = 128;
-    const kv_protocal::TimeoutSpec ttl{1, 0}; // 1 second
-
-    for (int begin = 0; begin < TIMER_STEP_KV; begin += BATCH_SIZE)
-    {
-        int end = std::min(begin + BATCH_SIZE, TIMER_STEP_KV);
-        int batch_count = end - begin;
-
-        std::vector<std::string> keys;
-        std::vector<std::string> values;
-        std::vector<kv_client::KvRequest> requests;
-        std::vector<const char *> patterns;
-
-        keys.reserve(batch_count);
-        values.reserve(batch_count);
-        requests.reserve(batch_count);
-        patterns.reserve(batch_count);
-
-        for (int i = begin; i < end; ++i)
-        {
-            keys.emplace_back(make_timer_key(step, i));
-            values.emplace_back(make_timer_value(step, i));
-
-            requests.push_back({"SET",
-                                keys.back().c_str(),
-                                values.back().c_str(),
-                                ttl});
-            patterns.push_back("OK\r\n");
-        }
-
-        std::string testcase_name =
-            "timer-set-step" + std::to_string(step) + "-" + std::to_string(begin);
-
-        batch_testcase(
-            client,
-            requests.data(),
-            patterns.data(),
-            requests.size(),
-            testcase_name.c_str());
-    }
-}
-
-// GET the whole batch for `step` and assert every key has expired.
-static void timer_verify_expired(kv_client::KvClient &client, int step)
-{
-    constexpr int BATCH_SIZE = 128;
-
-    for (int begin = 0; begin < TIMER_STEP_KV; begin += BATCH_SIZE)
-    {
-        int end = std::min(begin + BATCH_SIZE, TIMER_STEP_KV);
-        int batch_count = end - begin;
-
-        std::vector<std::string> keys;
-        std::vector<kv_client::KvRequest> requests;
-        std::vector<const char *> patterns;
-
-        keys.reserve(batch_count);
-        requests.reserve(batch_count);
-        patterns.reserve(batch_count);
-
-        for (int i = begin; i < end; ++i)
-        {
-            keys.emplace_back(make_timer_key(step, i));
-
-            requests.push_back({"GET",
-                                keys.back().c_str(),
-                                ""});
-            patterns.push_back("NOT EXIST\r\n");
-        }
-
-        std::string testcase_name =
-            "timer-expired-step" + std::to_string(step) + "-" + std::to_string(begin);
-
-        batch_testcase(
-            client,
-            requests.data(),
-            patterns.data(),
-            requests.size(),
-            testcase_name.c_str());
-    }
-}
-
-void testcase_timer_multi_step(kv_client::KvClient &client)
-{
-    // t0: seed the first batch.
-    timer_set_batch(client, 0);
-    printf("timer-multi-step: t0 SET %d KV (1s TTL)\n", TIMER_STEP_KV);
-
-    // T1 .. T5: wait past the TTL, confirm the previous batch expired, seed the next.
-    for (int step = 1; step <= TIMER_STEPS; ++step)
-    {
-        usleep(TIMER_STEP_INTERVAL_US);
-
-        timer_verify_expired(client, step - 1);
-        timer_set_batch(client, step);
-
-        printf("timer-multi-step: T%d verified step %d expired + SET %d new KV\n",
-               step, step - 1, TIMER_STEP_KV);
-    }
-
-    printf("==> PASSED -> timer-multi-step (%d steps, %d KV/step, 1s TTL, 1.5s spacing)\n",
-           TIMER_STEPS, TIMER_STEP_KV);
-}
-
-// ===========================================================================
-// RESP protocol testcases driven through the hiredis synchronous client.
-// These mirror testcase_set_unique / testcase_get_unique / testcase_timer_multi_step
-// but talk to the server over Redis RESP instead of the native KvClient.
-// ===========================================================================
-
-static redisContext *resp_connect(const char *ip, uint16_t port)
-{
-    redisContext *c = redisConnect(ip, port);
-    if (c == nullptr || c->err)
-    {
-        printf("==> FAILED -> resp connect: %s\n", c ? c->errstr : "cannot allocate context");
-        if (c)
-            redisFree(c);
-        exit(1);
-    }
-    return c;
-}
-
-// RESP mirror of testcase_set_unique: SET every unique pair, expect +OK.
-void resp_testcase_set_unique(const char *ip, uint16_t port)
-{
-    constexpr int BATCH_SIZE = 128;
-    redisContext *c = resp_connect(ip, port);
-
-    for (int begin = 1; begin <= UNIQUE_KV_COUNT; begin += BATCH_SIZE)
-    {
-        int end = std::min(begin + BATCH_SIZE - 1, UNIQUE_KV_COUNT);
-
-        // Pipeline the whole batch, then read the replies back.
-        for (int i = begin; i <= end; ++i)
-        {
-            std::string key = make_unique_key(i);
-            std::string value = make_unique_value(i);
-            redisAppendCommand(c, "SET %s %s", key.c_str(), value.c_str());
-        }
-
-        for (int i = begin; i <= end; ++i)
-        {
-            redisReply *reply = nullptr;
-            if (redisGetReply(c, (void **)&reply) != REDIS_OK || reply == nullptr)
-            {
-                printf("==> FAILED -> resp-set-unique[%d], no reply: %s\n", i, c->errstr);
-                redisFree(c);
-                exit(1);
-            }
-            if (reply->type != REDIS_REPLY_STATUS || strcmp(reply->str, "OK") != 0)
-            {
-                printf("==> FAILED -> resp-set-unique[%d], unexpected reply (type=%d)\n", i, reply->type);
-                freeReplyObject(reply);
-                redisFree(c);
-                exit(1);
-            }
-            freeReplyObject(reply);
-        }
-    }
-
-    redisFree(c);
-    printf("==> PASSED -> resp-set-unique (%d KV over RESP)\n", UNIQUE_KV_COUNT);
-}
-
-// RESP mirror of testcase_get_unique: GET every pair, verify the bulk value.
-void resp_testcase_get_unique(const char *ip, uint16_t port)
-{
-    constexpr int BATCH_SIZE = 128;
-    redisContext *c = resp_connect(ip, port);
-
-    for (int begin = 1; begin <= UNIQUE_KV_COUNT; begin += BATCH_SIZE)
-    {
-        int end = std::min(begin + BATCH_SIZE - 1, UNIQUE_KV_COUNT);
-
-        for (int i = begin; i <= end; ++i)
-        {
-            std::string key = make_unique_key(i);
-            redisAppendCommand(c, "GET %s", key.c_str());
-        }
-
-        for (int i = begin; i <= end; ++i)
-        {
-            std::string expected = make_unique_value(i);
-            redisReply *reply = nullptr;
-            if (redisGetReply(c, (void **)&reply) != REDIS_OK || reply == nullptr)
-            {
-                printf("==> FAILED -> resp-get-unique[%d], no reply: %s\n", i, c->errstr);
-                redisFree(c);
-                exit(1);
-            }
-            // RESP GET returns a bulk string with the raw value (no trailing CRLF).
-            if (reply->type != REDIS_REPLY_STRING ||
-                reply->len != expected.size() ||
-                memcmp(reply->str, expected.c_str(), reply->len) != 0)
-            {
-                printf("==> FAILED -> resp-get-unique[%d], unexpected reply (type=%d)\n", i, reply->type);
-                freeReplyObject(reply);
-                redisFree(c);
-                exit(1);
-            }
-            freeReplyObject(reply);
-        }
-    }
-
-    redisFree(c);
-    printf("==> PASSED -> resp-get-unique (%d KV over RESP)\n", UNIQUE_KV_COUNT);
-}
-
-// SET the whole batch for `step` over RESP, each key carrying a 1s expiry (EX 1).
-static void resp_timer_set_batch(redisContext *c, int step)
-{
-    constexpr int BATCH_SIZE = 128;
+    const char *name = "resp-timer-set";
 
     for (int begin = 0; begin < TIMER_STEP_KV; begin += BATCH_SIZE)
     {
@@ -715,34 +402,20 @@ static void resp_timer_set_batch(redisContext *c, int step)
         {
             std::string key = make_timer_key(step, i);
             std::string value = make_timer_value(step, i);
-            redisAppendCommand(c, "SET %s %s EX 1", key.c_str(), value.c_str());
+            redisAppendCommand(c, "SET %b %b EX 1", key.data(), key.size(), value.data(), value.size());
         }
 
         for (int i = begin; i < end; ++i)
-        {
-            redisReply *reply = nullptr;
-            if (redisGetReply(c, (void **)&reply) != REDIS_OK || reply == nullptr)
-            {
-                printf("==> FAILED -> resp-timer-set step%d[%d], no reply\n", step, i);
-                redisFree(c);
-                exit(1);
-            }
-            if (reply->type != REDIS_REPLY_STATUS || strcmp(reply->str, "OK") != 0)
-            {
-                printf("==> FAILED -> resp-timer-set step%d[%d], unexpected reply (type=%d)\n", step, i, reply->type);
-                freeReplyObject(reply);
-                redisFree(c);
-                exit(1);
-            }
-            freeReplyObject(reply);
-        }
+            expect_status(c, name, "OK");
     }
+
+    return TIMER_STEP_KV;
 }
 
-// GET the whole batch for `step` over RESP and assert every key has expired (nil).
-static void resp_timer_verify_expired(redisContext *c, int step)
+// GET the whole batch for `step` and assert every key has expired.
+static long long timer_verify_expired(redisContext *c, int step)
 {
-    constexpr int BATCH_SIZE = 128;
+    const char *name = "resp-timer-expired";
 
     for (int begin = 0; begin < TIMER_STEP_KV; begin += BATCH_SIZE)
     {
@@ -751,140 +424,154 @@ static void resp_timer_verify_expired(redisContext *c, int step)
         for (int i = begin; i < end; ++i)
         {
             std::string key = make_timer_key(step, i);
-            redisAppendCommand(c, "GET %s", key.c_str());
+            redisAppendCommand(c, "GET %b", key.data(), key.size());
         }
 
         for (int i = begin; i < end; ++i)
-        {
-            redisReply *reply = nullptr;
-            if (redisGetReply(c, (void **)&reply) != REDIS_OK || reply == nullptr)
-            {
-                printf("==> FAILED -> resp-timer-expired step%d[%d], no reply\n", step, i);
-                redisFree(c);
-                exit(1);
-            }
-            if (reply->type != REDIS_REPLY_NIL)
-            {
-                printf("==> FAILED -> resp-timer-expired step%d[%d], key not expired (type=%d)\n", step, i, reply->type);
-                freeReplyObject(reply);
-                redisFree(c);
-                exit(1);
-            }
-            freeReplyObject(reply);
-        }
+            expect_nil(c, name);
     }
+
+    return TIMER_STEP_KV;
 }
 
-// RESP mirror of testcase_timer_multi_step using SET ... EX 1 for expiration.
-void resp_testcase_timer_multi_step(const char *ip, uint16_t port)
+static long long testcase_timer_multi_step(redisContext *c)
 {
-    redisContext *c = resp_connect(ip, port);
+    // t0: seed the first batch.
+    long long commands = timer_set_batch(c, 0);
+    printf("timer-multi-step: t0 SET %d KV (1s TTL)\n", TIMER_STEP_KV);
 
-    resp_timer_set_batch(c, 0);
-    printf("resp-timer-multi-step: t0 SET %d KV (1s TTL)\n", TIMER_STEP_KV);
-
+    // T1 .. T5: wait past the TTL, confirm the previous batch expired, seed the next.
     for (int step = 1; step <= TIMER_STEPS; ++step)
     {
         usleep(TIMER_STEP_INTERVAL_US);
 
-        resp_timer_verify_expired(c, step - 1);
-        resp_timer_set_batch(c, step);
+        commands += timer_verify_expired(c, step - 1);
+        commands += timer_set_batch(c, step);
 
-        printf("resp-timer-multi-step: T%d verified step %d expired + SET %d new KV\n",
+        printf("timer-multi-step: T%d verified step %d expired + SET %d new KV\n",
                step, step - 1, TIMER_STEP_KV);
     }
 
-    redisFree(c);
-    printf("==> PASSED -> resp-timer-multi-step (%d steps, %d KV/step, 1s TTL, 1.5s spacing)\n",
-           TIMER_STEPS, TIMER_STEP_KV);
+    return commands;
 }
 
-void array_testcase_1w(kv_client::KvClient &client, void (*func)(kv_client::KvClient &))
+using TestcaseFn = long long (*)(redisContext *);
+
+static void report(const char *name, long long commands, const struct timeval &begin)
 {
+    struct timeval end;
+    gettimeofday(&end, nullptr);
 
-    int count = 10000;
-    int i = 0;
+    long long time_used = TIME_SUB_MS(end, begin); // ms
+    if (time_used <= 0)
+        time_used = 1;
 
-    struct timeval tv_begin;
-    gettimeofday(&tv_begin, NULL);
+    printf("==> PASSED -> %s, commands: %lld, time_used: %lld ms, qps: %lld\n",
+           name, commands, time_used, commands * 1000 / time_used);
+}
 
-    for (i = 0; i < count; i++)
-    {
+static void run_testcase(redisContext *c, TestcaseFn func, const char *name)
+{
+    struct timeval begin;
+    gettimeofday(&begin, nullptr);
 
-        func(client);
-    }
+    report(name, func(c), begin);
+}
 
-    struct timeval tv_end;
-    gettimeofday(&tv_end, NULL);
+// Replays a whole testcase `count` times and reports the aggregate throughput.
+static void repeat_testcase(redisContext *c, TestcaseFn func, const char *name)
+{
+    constexpr int count = 10000;
 
-    int time_used = TIME_SUB_MS(tv_end, tv_begin); // ms
+    struct timeval begin;
+    gettimeofday(&begin, nullptr);
 
-    printf("rbtree testcase --> time_used: %d, qps: %d\n", time_used, 90000 * 1000 / time_used);
+    long long commands = 0;
+    for (int i = 0; i < count; i++)
+        commands += func(c);
+
+    char label[128];
+    snprintf(label, sizeof(label), "%s x%d", name, count);
+    report(label, commands, begin);
+}
+
+static void usage(const char *prog)
+{
+    fprintf(stderr,
+            "Usage: %s <ip> <port> <mode>\n"
+            "\n"
+            "  0   basic SET/GET/overwrite/EXISTS/DEL sequence\n"
+            "  1   mode 0 replayed 10k times, with throughput\n"
+            "  2   the same sequence with a %zu byte value\n"
+            "  3   mode 2 replayed 10k times, with throughput\n"
+            "  4   TTL: keys set with PX must be gone once they expire\n"
+            "  5   SET %d keys sharing one 1 KiB value\n"
+            "  6   DEL the %d keys written by mode 5\n"
+            "  7   SET %d unique key/value pairs\n"
+            "  8   GET and verify the pairs written by mode 7\n"
+            "  9   multi-step 1s TTL expiration under sustained writes\n"
+            "  10  SET the first half of the mode 7 pairs\n"
+            "  11  SET the second half of the mode 7 pairs\n",
+            prog, LARGE_VALUE_LEN, N, N, UNIQUE_KV_COUNT);
 }
 
 int main(int argc, char **argv)
 {
     if (argc != 4)
     {
-        perror("Please provide ip port test_mode");
+        usage(argv[0]);
         return -1;
     }
+
     uint16_t port = atoi(argv[2]);
     int mode = atoi(argv[3]);
 
-    // Modes 10-12 exercise the RESP protocol path through hiredis and use their
-    // own client connection instead of the native KvClient.
-    if (mode == 10)
+    redisContext *c = resp_connect(argv[1], port);
+
+    switch (mode)
     {
-        resp_testcase_set_unique(argv[1], port);
-        return 0;
-    }
-    else if (mode == 11)
-    {
-        resp_testcase_get_unique(argv[1], port);
-        return 0;
-    }
-    else if (mode == 12)
-    {
-        resp_testcase_timer_multi_step(argv[1], port);
-        return 0;
+        case 0:
+            run_testcase(c, testcase_basic, "resp-basic");
+            break;
+        case 1:
+            repeat_testcase(c, testcase_basic, "resp-basic");
+            break;
+        case 2:
+            run_testcase(c, testcase_large_value, "resp-large-value");
+            break;
+        case 3:
+            repeat_testcase(c, testcase_large_value, "resp-large-value");
+            break;
+        case 4:
+            run_testcase(c, testcase_timeout, "resp-timeout");
+            break;
+        case 5:
+            run_testcase(c, testcase_set, "resp-set");
+            break;
+        case 6:
+            run_testcase(c, testcase_del, "resp-del");
+            break;
+        case 7:
+            run_testcase(c, testcase_set_unique, "resp-set-unique");
+            break;
+        case 8:
+            run_testcase(c, testcase_get_unique, "resp-get-unique");
+            break;
+        case 9:
+            run_testcase(c, testcase_timer_multi_step, "resp-timer-multi-step");
+            break;
+        case 10:
+            run_testcase(c, testcase_set_unique_first_half, "resp-set-unique-first-half");
+            break;
+        case 11:
+            run_testcase(c, testcase_set_unique_second_half, "resp-set-unique-second-half");
+            break;
+        default:
+            usage(argv[0]);
+            redisFree(c);
+            return -1;
     }
 
-    kv_client::KvClient client_ins(argv[1], port);
-
-    if (client_ins.init() != 0)
-    {
-        perror("Failed to initialize client");
-        return -1;
-    }
-    if (mode == 0)
-        testcase1(client_ins);
-    else if (mode == 1)
-        array_testcase_1w(client_ins, testcase1);
-    else if (mode == 2)
-        testcase2(client_ins);
-    else if (mode == 3)
-        array_testcase_1w(client_ins, testcase2);
-    else if (mode == 4)
-        testcase_timeout(client_ins);
-    else if (mode == 5)
-        testcase_set(client_ins);
-    else if (mode == 6)
-        testcase_del(client_ins);
-    else if (mode == 7)
-        testcase_set_unique(client_ins);
-    else if (mode == 8)
-        testcase_get_unique(client_ins);
-    else if (mode == 9)
-        testcase_timer_multi_step(client_ins);
-    else if (mode == 14)
-        testcase_set_unique_first_half(client_ins);
-    else if (mode == 15)
-        testcase_set_unique_second_half(client_ins);
-    else
-    {
-        perror("Invalid testcase number");
-        return -1;
-    }
+    redisFree(c);
     return 0;
 }
