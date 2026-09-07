@@ -30,6 +30,7 @@ namespace base_component
                 ;
 
             Node *front = head_.load(std::memory_order_relaxed);
+            front->~Node();
             KV_NODE_FREE(Node, front);
         }
 
@@ -51,6 +52,7 @@ namespace base_component
 
             result = next->data;
             tail_.store(next, std::memory_order_release);
+            tail->~Node();
             KV_NODE_FREE(Node, tail);
             return true;
         }
@@ -63,6 +65,8 @@ namespace base_component
             {
                 next.store(nullptr, std::memory_order_relaxed);
             }
+
+            ~Node() {}
 
             T data;
             std::atomic<Node *> next;
