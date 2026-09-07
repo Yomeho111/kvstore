@@ -251,10 +251,11 @@ namespace kv_persistent
                 while (is_running_.load(std::memory_order_acquire))
                 {
                     int old_fd{-1};
-                    std::unique_lock lk{mtx_};
-                    cv_.wait(lk, [this, &old_fd]
-                             { return old_fd_que_.dequeue(old_fd) || !is_running_.load(std::memory_order_acquire); });
-
+                    {
+                        std::unique_lock lk{mtx_};
+                        cv_.wait(lk, [this, &old_fd]
+                                 { return old_fd_que_.dequeue(old_fd) || !is_running_.load(std::memory_order_acquire); });
+                    }
                     do
                     {
                         if (old_fd >= 0)
@@ -283,6 +284,13 @@ namespace kv_persistent
     {
         _close_file();
 
+        is_running_.store(false, std::memory_order_release);
+
+        cv_.notify_all();
+
+        if (sync_thr_.joinable())
+            sync_thr_.join();
+
         if (ring_ready_)
         {
             io_uring_queue_exit(&ring_);
@@ -297,13 +305,6 @@ namespace kv_persistent
                 write_slot.iov[i] = nullptr;
             }
         }
-
-        is_running_.store(false, std::memory_order_release);
-
-        cv_.notify_all();
-
-        if (sync_thr_.joinable())
-            sync_thr_.join();
     }
 
     int StoreEngine::dump_record(CommandType command, const string &key, const string &value)
