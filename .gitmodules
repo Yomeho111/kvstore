@@ -4,3 +4,6 @@
 [submodule "third_party/libbpf-bootstrap"]
 	path = third_party/libbpf-bootstrap
 	url = https://github.com/libbpf/libbpf-bootstrap.git
+[submodule "third_party/isa-l"]
+	path = third_party/isa-l
+	url = https://github.com/intel/isa-l.git
