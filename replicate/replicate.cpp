@@ -290,29 +290,32 @@ namespace replicate
         if (1 != inet_pton(AF_INET, ip_, &dst_addr.sin_addr))
         {
             KV_ERROR("'%s' is not a valid IPv4 address", ip_ ? ip_ : "");
-            return 0;
+            return -1;
         }
 
         if (0 != rdma_resolve_addr(cm_id_, NULL, (struct sockaddr *)&dst_addr, RDMA_TIMEOUT_MS))
         {
             KV_ERROR("rdma_resolve_addr %s: %s (the address must be on an RDMA netdev)",
                      ip_, strerror(errno));
-            return 0;
+            return -1;
         }
 
-        rdma_wait_cm_event(channel_, RDMA_CM_EVENT_ADDR_RESOLVED, NULL);
+        if (0 != rdma_wait_cm_event(channel_, RDMA_CM_EVENT_ADDR_RESOLVED, NULL))
+            return -1;
 
         if (0 != rdma_resolve_route(cm_id_, RDMA_TIMEOUT_MS))
         {
             KV_ERROR("rdma_resolve_route: %s", strerror(errno));
-            return 0;
+            return -1;
         }
-        rdma_wait_cm_event(channel_, RDMA_CM_EVENT_ROUTE_RESOLVED, NULL);
+
+        if (0 != rdma_wait_cm_event(channel_, RDMA_CM_EVENT_ROUTE_RESOLVED, NULL))
+            return -1;
 
         if (0 != rdma_create_queuepair(cm_id_, &pd_, &send_cq_, &recv_cq_))
         {
             KV_ERROR("rdma_create_queuepair: %s", strerror(errno));
-            return 0;
+            return -1;
         }
 
         if (0 != rdma_alloc_buffer(cm_id_, pd_, SMALL_BUFFER_SIZE, RDMA_BUFFER_SIZE))
@@ -339,14 +342,15 @@ namespace replicate
             return -1;
         }
 
-        rdma_wait_cm_event(channel_, RDMA_CM_EVENT_ESTABLISHED, NULL);
+        if (0 != rdma_wait_cm_event(channel_, RDMA_CM_EVENT_ESTABLISHED, NULL))
+            return -1;
 
         return 0;
     }
 
     int MasterServer::send(const char *file_path)
     {
-        if (!cm_id_)
+        if (!cm_id_ || !cm_id_->context)
             return -1;
         replicate::conn_manager_t *cm = (replicate::conn_manager_t *)cm_id_->context;
 
@@ -475,7 +479,7 @@ namespace replicate
         struct sockaddr_in server_addr;
         memset(&server_addr, 0, sizeof(server_addr));
         server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(RDMA_SLAVE_PORT);
+        server_addr.sin_port = htons(port_);
 
         if (1 != inet_pton(AF_INET, ip_, &server_addr.sin_addr))
         {
@@ -484,7 +488,7 @@ namespace replicate
         }
         if (0 != rdma_bind_addr(cm_listen_id_, (struct sockaddr *)&server_addr))
         {
-            KV_ERROR("rdma_bind_addr on port %d: %s", RDMA_SLAVE_PORT, strerror(errno));
+            KV_ERROR("rdma_bind_addr on ip port %s, %d: %s", ip_, port_, strerror(errno));
             return -3;
         }
         return 0;

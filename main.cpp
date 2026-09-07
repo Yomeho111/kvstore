@@ -44,9 +44,12 @@ static void usage(const char *prog)
             "  mode        = none              none | aof | rdb\n"
             "\n"
             "  [replication]\n"
-            "  role        = standalone        standalone | master | slave\n"
-            "  master_ip   = 10.0.0.4          required when role = slave\n"
-            "  master_port = 20000             master's RDMA port\n"
+            "  role            = standalone    standalone | master | slave\n"
+            "  master_ip       = 10.0.0.4      required when role = slave\n"
+            "  master_port     = 8050          the master's listening port\n"
+            "  slave_rdma_ip   = 10.0.0.4      required when role = slave: the\n"
+            "                                  replica's RDMA-capable address\n"
+            "  slave_rdma_port = 20000         the replica's RDMA port\n"
             "\n"
             "  In rdb mode, send SIGUSR1 (kill -USR1 <pid>) to take a snapshot.\n",
             prog, prog);
@@ -102,9 +105,6 @@ int main(int argc, char *argv[])
 
     is_slave = cfg.role == kv_config::Role::SLAVE;
 
-    // // A slave tracks updates locally too, so it can be promoted later.
-    // replicate::g_replicate = cfg.role != kv_config::Role::STANDALONE;
-
     KV_INFO("kvstore starting: config=%s port=%u role=%s persistence=%s log_level=%s",
             config_path,
             static_cast<unsigned>(cfg.port),
@@ -117,6 +117,8 @@ int main(int argc, char *argv[])
     if (is_slave)
     {
         // slave server
+        hpc_coroutine::TcpSlaveServer slave_server(cfg.master_port, cfg.slave_rdma_port, cfg.master_ip.c_str(), cfg.slave_rdma_ip.c_str());
+        slave_server.start_eventloop();
     }
     else
     {

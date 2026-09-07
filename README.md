@@ -3,7 +3,7 @@
 A high-performance, persistent, in-memory key–value store written in modern C++20.
 
 KVStore is a learning-oriented yet feature-complete storage server. It is built around
-**pluggable networking models** (Reactor / Proactor / Coroutine), **pluggable storage
+**pluggable networking model** (Coroutine), **pluggable storage
 engines** (Red-Black Tree / Hash / Skiplist / Array), an **append-only persistence layer**
 with crash recovery, **master–slave replication**, **per-key TTL/timeout expiration**, and
 an optional **custom memory pool allocator** (tcmalloc-style).
@@ -100,7 +100,7 @@ replay every record in order with to_disk=false`.
 | [core_engine/](core_engine/) | Storage engines and the abstract `EngineInterface`. |
 | [base_component/](base_component/) | Data structures: `rbtree`, `hash`, `skiplist`, `array`. |
 | [persistent_core/](persistent_core/) | `StoreEngine` — append-only write-ahead log + recovery. |
-| [network/](network/) | Network backends: `reactor/`, `proactor/`, `my_coroutine/`. |
+| [network/](network/) | Network backend: `my_coroutine/`. |
 | [protocal/](protocal/) | Wire protocol: headers (`kv_header.h`) and codec (`kv_protocal.hpp`). |
 | [replication/](replication/) | `RepManager` — master/slave replication. |
 | [timer/](timer/) | Timer manager for TTL / scheduled key expiration. |
@@ -125,7 +125,6 @@ All options are passed to CMake with `-D<OPTION>=<VALUE>`.
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `NETWORK` | `REACTOR`, `PROACTOR`, `COROUTINE` | `REACTOR` | Network backend. |
 | `ENGINE` | `RBTREE_ENGINE`, `HASH_ENGINE`, `SKIPLIST_ENGINE`, `ARRAY_ENGINE` | `RBTREE_ENGINE` | Storage engine. |
 | `KVSTORE_PORT_NUM` | integer | `20` | Number of consecutive ports to listen on. |
 | `KVSTORE_ENABLE_TIMER` | `ON`/`OFF` | `OFF` | Enable connection timing logs. |
@@ -149,14 +148,14 @@ cmake --build build
 Reactor with the built-in memory pool, single listening port:
 
 ```bash
-cmake -S . -B build -DNETWORK=REACTOR -DKVSTORE_PORT_NUM=1 -DENABLE_MEMORY_POOL=ON
+cmake -S . -B build -DKVSTORE_PORT_NUM=1 -DENABLE_MEMORY_POOL=ON
 cmake --build build
 ```
 
 Proactor (`io_uring`) backend with the hash engine:
 
 ```bash
-cmake -S . -B build -DNETWORK=PROACTOR -DENGINE=HASH_ENGINE
+cmake -S . -B build -DENGINE=HASH_ENGINE
 cmake --build build
 ```
 
@@ -350,8 +349,7 @@ is append-only with no snapshots or compaction.
   thread-safe via an internal `SpinLock`.
 - **Red-Black tree** — [base_component/rbtree/rbtree.hpp](base_component/rbtree/rbtree.hpp)
   provides ordered O(log n) operations, with nodes allocated from a slab allocator.
-- **Network backends** — [network/reactor/](network/reactor/) (epoll),
-  [network/proactor/](network/proactor/) (`io_uring`), and
+- **Network backends** — 
   [network/my_coroutine/](network/my_coroutine/) (stackful coroutines).
 - **Memory pool** — [memory/](memory/) implements a tcmalloc-style allocator:
   `thread_cache` → `central_pool` → `page_allocator`, with a `slab` for fixed-size objects.

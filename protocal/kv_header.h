@@ -22,6 +22,8 @@ namespace kv_protocal
         "MULTI",
         "EXEC",
         "EXIT",
+        "SYNC",
+        "SYNCFIN",
         "END",
         "INVALID",
     };
@@ -39,6 +41,8 @@ namespace kv_protocal
         KVS_MULTI,
         KVS_EXEC,
         KVS_EXIT,
+        KVS_SYNC,
+        KVS_SYNCFIN,
         KVS_END,
         KVS_INVALID,
     };

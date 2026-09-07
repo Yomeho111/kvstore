@@ -28,10 +28,6 @@
 namespace replicate
 {
 
-    // Must not be `inline static`: `static` forces internal linkage, giving every
-    // translation unit its own copy, so the engine never sees main()'s value.
-    inline bool g_replicate{false};
-
     inline constexpr const char *SLAVE_TMP{".tmp"};
 
     // This is the server for master

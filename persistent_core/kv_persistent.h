@@ -25,18 +25,24 @@ namespace kv_persistent
 
     inline constexpr const char *RDB_DEFAULT_PATH{"rdb_data/kv_0.rdt"};
 
+    inline constexpr const char *RDB_TMP_PATH{"rdb_data/kv_0.rdt.tmp"};
+    inline constexpr const char *RDB_FOLDER{"rdb_data"};
+
+    size_t get_resp_size(const size_t command_len, size_t key_len, size_t value_len);
+
+    int format_resp(
+        const char *command,
+        const size_t command_size,
+        const string &key,
+        const string &value,
+        char *p);
+
     class StoreEngine
     {
         using CommandType = uint16_t;
 
     public:
-        StoreEngine() = default;
-        ~StoreEngine()
-        {
-            _close_file();
-            if (ring_ready_)
-                io_uring_queue_exit(&ring_);
-        }
+        static StoreEngine &instance();
 
         int dump_record(CommandType command, const string &key, const string &value);
 
@@ -49,6 +55,17 @@ namespace kv_persistent
         StoreEngine &operator=(const StoreEngine &) = delete;
         StoreEngine &operator=(StoreEngine &&) = delete;
 
+        StoreEngine() = default;
+
+        ~StoreEngine()
+        {
+            _close_file();
+            if (ring_ready_)
+                io_uring_queue_exit(&ring_);
+        }
+
+        int _init();
+
         int _open_file(int idx);
 
         void _close_file();
@@ -59,11 +76,11 @@ namespace kv_persistent
 
         int _append(const char *buf, size_t len);
 
-        int file_idx_ = 0;
-        size_t file_size = 0;
-        int fd_ = -1;
-        struct io_uring ring_;
         bool ring_ready_ = false;
+        int file_idx_ = 0;
+        int fd_ = -1;
+        size_t file_size = 0;
+        struct io_uring ring_;
     };
 
     // RDB snapshot store.
@@ -95,8 +112,7 @@ namespace kv_persistent
         };
 
     public:
-        SnapshotEngine() = default;
-        ~SnapshotEngine();
+        static SnapshotEngine &instance();
 
         // parent side (around fork)
         int prepare();  // create folder + open the temp snapshot file
@@ -109,13 +125,16 @@ namespace kv_persistent
         int child_finish();                                      // drain in-flight writes + fdatasync
 
         // load (parent, at startup)
-        int load(kv_engine::EngineInterfaceBase *engine, const string &file_path_str);
+        int load(kv_engine::EngineInterfaceBase *engine, const string &file_path_str, bool to_disk = false);
 
     private:
         SnapshotEngine(const SnapshotEngine &) = delete;
         SnapshotEngine(SnapshotEngine &&) = delete;
         SnapshotEngine &operator=(const SnapshotEngine &) = delete;
         SnapshotEngine &operator=(SnapshotEngine &&) = delete;
+
+        SnapshotEngine() = default;
+        ~SnapshotEngine();
 
         int _reap_one(); // wait for one write completion and validate it
 

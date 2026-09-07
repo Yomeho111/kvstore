@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <arpa/inet.h>
 
 #include <fstream>
 
@@ -40,6 +41,18 @@ namespace kv_config
                 return false;
 
             out = static_cast<uint16_t>(value);
+            return true;
+        }
+
+        // The address is handed to inet_pton() when the RDMA listener binds, so a
+        // hostname would only fail much later.
+        bool parse_ipv4(const std::string &text, string &out)
+        {
+            struct in_addr addr;
+            if (inet_pton(AF_INET, text.c_str(), &addr) != 1)
+                return false;
+
+            out.assign(text.data(), text.size());
             return true;
         }
 
@@ -166,9 +179,13 @@ namespace kv_config
             else if (section == "replication" && key == "role")
                 bad_value = !parse_role(value, parsed.role);
             else if (section == "replication" && key == "master_ip")
-                parsed.master_ip = raw;
+                parsed.master_ip.assign(raw.data(), raw.size());
             else if (section == "replication" && key == "master_port")
                 bad_value = !parse_port(value, parsed.master_port);
+            else if (section == "replication" && key == "slave_rdma_ip")
+                bad_value = !parse_ipv4(raw, parsed.slave_rdma_ip);
+            else if (section == "replication" && key == "slave_rdma_port")
+                bad_value = !parse_port(value, parsed.slave_rdma_port);
             else
             {
                 KV_ERROR("%s:%d: unknown setting '%s' in section '[%s]'",
@@ -186,6 +203,13 @@ namespace kv_config
         if (parsed.role == Role::SLAVE && parsed.master_ip.empty())
         {
             KV_ERROR("%s: replication.role is 'slave' but replication.master_ip is not set", path);
+            return -1;
+        }
+
+        // The replica listens on this endpoint and passes it to the master in SYNC.
+        if (parsed.role == Role::SLAVE && parsed.slave_rdma_ip.empty())
+        {
+            KV_ERROR("%s: replication.role is 'slave' but replication.slave_rdma_ip is not set", path);
             return -1;
         }
 

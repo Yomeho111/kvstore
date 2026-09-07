@@ -21,6 +21,8 @@
 #include "allocator.h"
 #include "kv_header.h"
 #include "kv_persistent.h"
+#include "replicate.h"
+#include "kv_log.h"
 
 // #define MAX_BODY_SIZE 4096
 #define MAX_TOKEN_SIZE 2
@@ -28,6 +30,14 @@
 
 namespace kv_protocal
 {
+
+    struct DataField
+    {
+        char *data;
+        size_t size;
+    };
+
+    inline constexpr const char *SYNCFIN_RESP = "*1\r\n$7\r\nSYNCFIN\r\n";
 
     template <typename KvEngine>
     class KvProtocal
@@ -45,15 +55,15 @@ namespace kv_protocal
             return prot;
         }
 
-        int save(bool for_temp = false)
-        {
-            return _engine.save(for_temp);
-        }
+        // int save(bool for_temp = false)
+        // {
+        //     return _engine.save(for_temp);
+        // }
 
-        void remove_tmp_file()
-        {
-            _engine.remove_temp_file();
-        }
+        // void remove_tmp_file()
+        // {
+        //     _engine.remove_temp_file();
+        // }
 
         int process_num_request(struct network::StatusM *status, uint32_t num_request)
         {
@@ -382,6 +392,54 @@ namespace kv_protocal
                     return 0;
                 }
             }
+            else if (strcmp(cmd, "SYNC") == 0)
+            {
+                // SYNC <replica-ip> <replica-rdma-port>: snapshot the dataset and
+                // push it over RDMA. The replica must already be listening.
+                if (argc < 3)
+                {
+                    out += "-ERR wrong number of arguments for 'SYNC' command\r\n";
+                    return 0;
+                }
+
+                // hiredis NUL-terminates every bulk argument, so the address goes
+                // straight to inet_pton() with no copy; reject embedded NULs.
+                if (argv[1] == nullptr || argvlen[1] == 0 || strlen(argv[1]) != argvlen[1])
+                {
+                    out += "-ERR invalid replica address\r\n";
+                    return 0;
+                }
+
+                long long port = 0;
+                if (!_resp_to_ll(argv[2], argvlen[2], port) || port <= 0 || port > 65535)
+                {
+                    out += "-ERR invalid replica port\r\n";
+                    return 0;
+                }
+
+                KV_INFO("Get SYNC command, sync data to %s: %llu", argv[1], port);
+                switch (_send_replicate(argv[1], static_cast<uint16_t>(port)))
+                {
+                    case 0:
+                        out += "+OK\r\n";
+                        break;
+                    case -1:
+                        out += "-ERR snapshot failed\r\n";
+                        break;
+                    case -2:
+                        out += "-ERR cannot reach replica over RDMA\r\n";
+                        break;
+                    default:
+                        out += "-ERR snapshot transfer failed\r\n";
+                        break;
+                }
+                KV_INFO("SYNC command finished to %s: %llu", argv[1], port);
+                return 0;
+            }
+            else if (strcmp(cmd, "SYNCFIN") == 0)
+            {
+                return 0;
+            }
 
             out += "-ERR unknown command\r\n";
             return 0;
@@ -392,9 +450,31 @@ namespace kv_protocal
             return _engine.size();
         }
 
-        int load_snapshot(const string &file_path_str)
+        int load_snapshot(const string &file_path_str, bool to_disk)
         {
-            return _engine.load_snapshot(file_path_str);
+            return _engine.load_snapshot(file_path_str, to_disk);
+        }
+
+        DataField make_command(const char *command, size_t command_size, const string &key, const string &value)
+        {
+            if (command_size == 0)
+                return {nullptr, 0};
+
+            size_t buffer_size = kv_persistent::get_resp_size(command_size, key.size(), value.size());
+
+            char *buffer = (char *)allocator::kv_malloc(buffer_size);
+            if (!buffer)
+            {
+                return {nullptr, 0};
+            }
+
+            if (kv_persistent::format_resp(command, command_size, key, value, buffer) < 0)
+            {
+                allocator::kv_free(buffer);
+                return {nullptr, 0};
+            }
+
+            return {buffer, buffer_size};
         }
 
     private:
@@ -459,6 +539,33 @@ namespace kv_protocal
         {
             ts.tv_sec = static_cast<long>(ms / 1000);
             ts.tv_nsec = static_cast<long>((ms % 1000) * 1000000);
+        }
+
+        /**
+         * @brief the key function to save all data into temp file and send to slave server
+         */
+        int _send_replicate(const char *ip, uint16_t port)
+        {
+            // save all data into tmp file
+            if (_engine.save(true) < 0)
+            {
+                return -1;
+            }
+
+            // launch rdma server and send the tmp file
+            replicate::MasterServer master(ip, port);
+            if (master.init() < 0)
+                return -2;
+
+            KV_INFO("Master rdma init succeed");
+            if (master.send(kv_persistent::RDB_TMP_PATH) < 0)
+                return -3;
+
+            KV_INFO("Master rdma send succeed");
+            // close rdma and remove tmp file
+            _engine.remove_temp_file();
+            KV_INFO("remove temp file");
+            return 0;
         }
 
         int _split_token(char *body, char **tokens, uint32_t key_length)

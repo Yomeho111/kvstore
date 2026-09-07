@@ -19,6 +19,7 @@
 #include "kv_header.h"
 #include "crc32.h"
 #include "allocator.h"
+#include "kv_log.h"
 
 namespace kv_persistent
 {
@@ -29,7 +30,6 @@ namespace kv_persistent
     constexpr uint32_t MAGIC{0x4B565354};
     constexpr unsigned KVS_URING_DEPTH{8};
 
-    constexpr const char *RDB_FOLDER{"rdb_data"};
     constexpr const char *RDB_FILE{"kv_0.rdt"};
     constexpr const char *RDB_TMP{"kv_0.rdt.tmp"};
 
@@ -52,7 +52,7 @@ namespace kv_persistent
         return ptr;
     }
 
-    static size_t get_resp_size(const size_t command_len, size_t key_len, size_t value_len)
+    size_t get_resp_size(const size_t command_len, size_t key_len, size_t value_len)
     {
         // "*3\r\n"
         size_t total_size = 14 + command_len + key_len + decimal_digits(command_len) + decimal_digits(key_len);
@@ -63,7 +63,7 @@ namespace kv_persistent
         return total_size;
     }
 
-    static int format_resp(
+    int format_resp(
         const char *command,
         const size_t command_size,
         const string &key,
@@ -210,6 +210,23 @@ namespace kv_persistent
                 return static_cast<int>(i);
         }
         return kv_protocal::KVS_INVALID;
+    }
+
+    StoreEngine &StoreEngine::instance()
+    {
+        static StoreEngine engine;
+        static int ret = engine._init();
+        if (ret < 0)
+        {
+            KV_ERROR("StoreEngine init error");
+            std::exit(-1);
+        }
+        return engine;
+    }
+
+    int StoreEngine::_init()
+    {
+        return 0;
     }
 
     int StoreEngine::dump_record(CommandType command, const string &key, const string &value)
@@ -568,6 +585,12 @@ namespace kv_persistent
 
     // ------------------------------ RDB snapshot ------------------------------
 
+    SnapshotEngine &SnapshotEngine::instance()
+    {
+        static SnapshotEngine engine;
+        return engine;
+    }
+
     SnapshotEngine::~SnapshotEngine()
     {
         if (ring_ready_)
@@ -749,7 +772,7 @@ namespace kv_persistent
         fs::remove(fs::path{RDB_FOLDER} / RDB_TMP, ec);
     }
 
-    int SnapshotEngine::load(kv_engine::EngineInterfaceBase *engine, const string &file_path_str)
+    int SnapshotEngine::load(kv_engine::EngineInterfaceBase *engine, const string &file_path_str, bool to_disk)
     {
         if (engine == nullptr)
             return -1;
@@ -862,7 +885,7 @@ namespace kv_persistent
 
             int ret = 0;
 
-            ret = engine->set(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, false);
+            ret = engine->set(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, to_disk);
 
             if (ret != 0)
             {

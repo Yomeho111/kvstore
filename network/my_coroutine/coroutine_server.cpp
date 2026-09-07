@@ -6,7 +6,9 @@
 #include <errno.h>
 #include <sys/uio.h>
 #include <string>
+#include <thread>
 #include "hiredis.h"
+#include "kv_log.h"
 
 #define RESP_RECV_BUF_SIZE 32768
 #define RESP_MAX_ARGS 64
@@ -329,5 +331,144 @@ namespace hpc_coroutine
             // printf("new client comming\n");
             hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(resp_server_process, cli_fd);
         }
+    }
+
+    void slave_process(int fd, uint16_t port_rdma, const char *ip_rdma)
+    {
+        if (!ip_rdma || fd < 0)
+            return;
+
+        char buf[32]{0};
+        int n{0};
+        int ret{0};
+
+        // launch the slave server
+        replicate::SlaveServer slave(ip_rdma, port_rdma);
+        if (slave.init() < 0)
+        {
+            KV_ERROR("slave launched error");
+            close(fd);
+            return;
+        }
+        KV_INFO("slave rdma init succeed on %s: %u", ip_rdma, port_rdma);
+
+        // use sub-thread to receive full sync data
+        std::thread thr{[&slave, &ret]
+                        {ret = slave.listen(); ret = slave.recv(replicate::SLAVE_TMP); }};
+
+        // make command for sync
+        const char *command = kv_protocal::command_str[kv_protocal::KVS_SYNC];
+        char port_str[32]{0};
+        snprintf(port_str, sizeof(port_str), "%u", port_rdma);
+
+        auto &prot = kv_protocal::KvStoreProtocal::instance();
+        auto rdma_payload = prot.make_command(command, strnlen(command, 32), ip_rdma, port_str);
+        KV_INFO("SYNC command: %s", rdma_payload.data);
+        if (rdma_payload.data == nullptr || rdma_payload.size == 0)
+        {
+            KV_ERROR("SYNC command error");
+            goto clean;
+        }
+
+        if (send(fd, rdma_payload.data, rdma_payload.size, 0) < 0)
+        {
+            KV_ERROR("SYNC send error");
+            goto clean;
+        }
+
+        KV_INFO("SYNC command sent");
+
+        n = recv(fd, buf, sizeof(buf), 0);
+        if (n <= 0)
+        {
+            KV_ERROR("SYNC recv error");
+            goto clean;
+        }
+
+        KV_INFO("SYNC response get: %s", buf);
+
+        if (strcmp(buf, "+OK\r\n"))
+        {
+            KV_ERROR("SYNC failed signal from master");
+            goto clean;
+        }
+
+        // remove rdma resource
+        if (thr.joinable())
+            thr.join();
+
+        // load data
+        if (prot.load_snapshot(replicate::SLAVE_TMP, true) < 0)
+        {
+            KV_ERROR("SYNC data load error");
+            goto clean;
+        }
+
+        KV_INFO("Load temp data");
+
+        // remove tmp data
+        if (remove(replicate::SLAVE_TMP) != 0)
+        {
+            KV_ERROR("tmp file remove error");
+            goto clean;
+        }
+
+        KV_INFO("remove temp data");
+
+        if (send(fd, kv_protocal::SYNCFIN_RESP, strnlen(kv_protocal::SYNCFIN_RESP, 32), 0) < 0)
+        {
+            KV_ERROR("SYNC send error");
+            goto clean;
+        }
+
+        resp_server_process(fd);
+
+    clean:
+        if (thr.joinable())
+            thr.detach();
+        if (rdma_payload.data)
+            allocator::kv_free(rdma_payload.data);
+        close(fd);
+        return;
+    }
+
+    // Runs inside a coroutine: the hooked socket()/connect()/recv()/send()
+    // yield to the scheduler, so they must NOT be called before the scheduler
+    // is running (i.e. not from TcpSlaveServer::init()).
+    void slave_run(uint16_t port, uint16_t port_rdma, const char *ip, const char *ip_rdma)
+    {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0)
+        {
+            KV_ERROR("socket");
+            return;
+        }
+
+        struct sockaddr_in server_addr{};
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(port);
+
+        if (inet_pton(AF_INET, ip, &server_addr.sin_addr) <= 0)
+        {
+            KV_ERROR("inet_pton");
+            close(fd);
+            return;
+        }
+
+        if (connect(fd, reinterpret_cast<struct sockaddr *>(&server_addr), sizeof(server_addr)) < 0)
+        {
+            KV_ERROR("connect");
+            close(fd);
+            return;
+        }
+
+        slave_process(fd, port_rdma, ip_rdma);
+    }
+
+    int TcpSlaveServer::start_eventloop()
+    {
+        hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(slave_run, _port, _port_rdma, _ip, _ip_rdma);
+        hpc_coroutine::CoroutineSched::get_coroutine_sched()->run();
+        return 0;
     }
 } // namespace hpc_coroutine

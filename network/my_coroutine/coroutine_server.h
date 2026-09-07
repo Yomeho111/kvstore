@@ -46,6 +46,23 @@ namespace hpc_coroutine
         uint16_t _port;
         int _fd_list[PORT_NUM];
     };
+
+    class TcpSlaveServer
+    {
+    public:
+        TcpSlaveServer(uint16_t port, uint16_t port_rdma, const char *ip, const char *ip_rdma)
+            : _port(port), _port_rdma(port_rdma), _ip(ip), _ip_rdma(ip_rdma) {}
+
+        ~TcpSlaveServer() = default;
+
+        int start_eventloop();
+
+    private:
+        uint16_t _port;
+        uint16_t _port_rdma;
+        const char *_ip;
+        const char *_ip_rdma;
+    };
 } // namespace hpc_coroutine
 
 #endif // __COR_SERVER

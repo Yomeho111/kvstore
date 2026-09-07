@@ -73,6 +73,7 @@ add_library(kvstore_core STATIC
     core_engine/hash_engine/hash_engine.cpp
     core_engine/skiplist_engine/skiplist_engine.cpp
     persistent_core/kv_persistent.cpp
+    replicate/replicate.cpp
     timer/timer.cpp
     third_party/hiredis/alloc.c
     third_party/hiredis/async.c
@@ -97,6 +98,7 @@ target_include_directories(kvstore_core
         ${PROJECT_SOURCE_DIR}/base_component/hash
         ${PROJECT_SOURCE_DIR}/base_component/skiplist
         ${PROJECT_SOURCE_DIR}/timer
+        ${PROJECT_SOURCE_DIR}/replicate
         ${PROJECT_SOURCE_DIR}/third_party/hiredis
 )
 
@@ -116,6 +118,11 @@ find_path(LIBURING_INCLUDE_DIR liburing.h REQUIRED)
 find_library(LIBURING_LIBRARY uring REQUIRED)
 target_include_directories(kvstore_core PUBLIC ${LIBURING_INCLUDE_DIR})
 target_link_libraries(kvstore_core PUBLIC ${LIBURING_LIBRARY})
+
+# Replica snapshot transfer runs over RDMA.
+find_library(RDMACM_LIBRARY rdmacm REQUIRED)
+find_library(IBVERBS_LIBRARY ibverbs REQUIRED)
+target_link_libraries(kvstore_core PUBLIC ${RDMACM_LIBRARY} ${IBVERBS_LIBRARY})
 
 
 add_library(kvstore_backend STATIC)
