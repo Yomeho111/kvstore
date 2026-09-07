@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <iostream>
 #include <vector>
+#include <utility>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -221,6 +222,7 @@ namespace kv_persistent
     int StoreEngine::_init()
     {
         int i{0};
+        bool expected = false;
         for (; i < AOF_DEPTH; i++)
         {
             write_slot.iov[i] = (char *)allocator::kv_malloc(IOBUFFER_SIZE);
@@ -236,9 +238,33 @@ namespace kv_persistent
         if (!ring_ready_)
         {
             if (io_uring_queue_init(AOF_DEPTH, &ring_, 0) < 0)
-                return -6;
+                goto clean;
             ring_ready_ = true;
         }
+
+        if (!is_running_.compare_exchange_strong(expected, true, std::memory_order_acq_rel, std::memory_order_relaxed))
+            goto clean;
+
+        sync_thr_ = std::thread(
+            [this]
+            {
+                while (is_running_.load(std::memory_order_acquire))
+                {
+                    int old_fd{-1};
+                    std::unique_lock lk{mtx_};
+                    cv_.wait(lk, [this, &old_fd]
+                             { return old_fd_que_.dequeue(old_fd) || !is_running_.load(std::memory_order_acquire); });
+
+                    do
+                    {
+                        if (old_fd >= 0)
+                        {
+                            ::fdatasync(old_fd);
+                            ::close(old_fd);
+                        }
+                    } while (old_fd_que_.dequeue(old_fd));
+                }
+            });
 
         return 0;
 
@@ -271,6 +297,13 @@ namespace kv_persistent
                 write_slot.iov[i] = nullptr;
             }
         }
+
+        is_running_.store(false, std::memory_order_release);
+
+        cv_.notify_all();
+
+        if (sync_thr_.joinable())
+            sync_thr_.join();
     }
 
     int StoreEngine::dump_record(CommandType command, const string &key, const string &value)
@@ -686,20 +719,23 @@ namespace kv_persistent
         return 0;
     }
 
-    void StoreEngine::_close_file()
+    int StoreEngine::_close_file()
     {
         if (fd_ >= 0)
         {
-            _submit_io_write();
-            _commit_io_uring(0);
+            if (_submit_io_write() < 0)
+                return -1;
+            if (_commit_io_uring(0))
+                return -2;
 
-            ::fdatasync(fd_);
-            ::close(fd_);
-            fd_ = -1;
+            int old_fd = std::exchange(fd_, -1);
+            old_fd_que_.enqueue(old_fd);
+            cv_.notify_one();
         }
 
         file_size = 0;
         write_slot.written_size = 0;
+        return 0;
     }
 
     int StoreEngine::_switch_new_file()

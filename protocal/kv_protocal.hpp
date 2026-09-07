@@ -391,6 +391,7 @@ namespace kv_protocal
                     out += "+OK\r\n";
                     return 0;
                 }
+                out += "-ERR Current persistent mode is not rdb\r\n";
             }
             else if (strcmp(cmd, "SYNC") == 0)
             {

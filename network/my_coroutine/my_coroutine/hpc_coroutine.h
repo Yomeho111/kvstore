@@ -13,7 +13,7 @@
 #include <type_traits>
 
 #define EPOLL_EVENTS_SIZE 1024
-#define MAX_STACK_SIZE 1024 * 128
+#define MAX_STACK_SIZE 1024 * 16
 
 namespace hpc_coroutine
 {
@@ -35,17 +35,7 @@ namespace hpc_coroutine
     class CoroutineSched
     {
     public:
-        static CoroutineSched *get_coroutine_sched(int stack_size = 0);
-
-        void *get_stack() noexcept
-        {
-            return stack_;
-        }
-
-        size_t get_stack_size() noexcept
-        {
-            return stack_size_;
-        }
+        static CoroutineSched *get_coroutine_sched();
 
         ucontext_t *get_ctx() noexcept
         {
@@ -89,8 +79,8 @@ namespace hpc_coroutine
 
     private:
         // singleton
-        CoroutineSched(int stack_size)
-            : epfd_(-1), spawned_coroutines_(0), stack_(nullptr), stack_size_(stack_size ? stack_size : MAX_STACK_SIZE), events_(nullptr)
+        CoroutineSched()
+            : epfd_(-1), spawned_coroutines_(0), events_(nullptr)
         {
         }
         ~CoroutineSched();
@@ -105,9 +95,7 @@ namespace hpc_coroutine
 
         int epfd_;
         uint32_t spawned_coroutines_;
-        void *stack_;
         Coroutine_t cur_co_;
-        size_t stack_size_;
         struct epoll_event *events_;
         ucontext_t main_ctx_;
         std::unordered_map<uint32_t, Coroutine_t> wait_table_;  // id: Coroutine
@@ -119,7 +107,7 @@ namespace hpc_coroutine
     {
     public:
         Coroutine(uint32_t id, CoroutineSched *sched, std::function<void()> func)
-            : is_ep_(false), fd_(-1), id_(id), status_(CoroutineStatus::NEW), stack_(nullptr), sched_(sched), stack_size_(0), func_(std::move(func)) {}
+            : is_ep_(false), fd_(-1), id_(id), status_(CoroutineStatus::NEW), stack_(nullptr), sched_(sched), valgrind_stack_id_(0), func_(std::move(func)) {}
         ~Coroutine();
 
         void resume();
@@ -162,10 +150,6 @@ namespace hpc_coroutine
         Coroutine &operator=(const Coroutine &) = delete;
         Coroutine &operator=(Coroutine &&) = delete;
 
-        void _save_stack() noexcept;
-
-        void _load_stack() noexcept;
-
         int init();
 
         bool is_ep_;
@@ -174,7 +158,7 @@ namespace hpc_coroutine
         CoroutineStatus status_;
         void *stack_;
         CoroutineSched *sched_;
-        size_t stack_size_;
+        unsigned valgrind_stack_id_;
         std::function<void()> func_;
         ucontext_t ctx_;
     };

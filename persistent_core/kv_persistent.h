@@ -5,8 +5,13 @@
 #include <string>
 #include <sys/uio.h>
 #include <liburing.h>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <condition_variable>
 #include "engine_interface_base.h"
 #include "allocator.h"
+#include <lockfree_queue.hpp>
 
 namespace kv_persistent
 {
@@ -80,7 +85,7 @@ namespace kv_persistent
 
         int _open_file(int idx);
 
-        void _close_file();
+        int _close_file();
 
         int _switch_new_file();
 
@@ -112,6 +117,16 @@ namespace kv_persistent
         } write_slot;
 
         int inflight_{0};
+
+        std::mutex mtx_;
+
+        std::condition_variable cv_;
+
+        std::thread sync_thr_;
+
+        std::atomic<bool> is_running_{false};
+
+        base_component::MpscQueue<int> old_fd_que_;
 
         struct io_uring ring_;
     };

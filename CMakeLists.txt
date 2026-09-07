@@ -102,6 +102,7 @@ target_include_directories(kvstore_core
         ${PROJECT_SOURCE_DIR}/base_component/array
         ${PROJECT_SOURCE_DIR}/base_component/hash
         ${PROJECT_SOURCE_DIR}/base_component/skiplist
+        ${PROJECT_SOURCE_DIR}/base_component/lockfree_queue
         ${PROJECT_SOURCE_DIR}/timer
         ${PROJECT_SOURCE_DIR}/replicate
         ${PROJECT_SOURCE_DIR}/third_party/hiredis
