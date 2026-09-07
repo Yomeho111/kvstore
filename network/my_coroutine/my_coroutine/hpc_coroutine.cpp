@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <assert.h>
+#include <errno.h>
 #include <string.h>
 #include "utils.h"
 #include "kv_log.h"
@@ -80,10 +81,10 @@ namespace hpc_coroutine
 
     void CoroutineSched::run()
     {
-        while (!empty())
+        while (!g_shutdown && !empty())
         {
             // first process ready
-            while (!ready_queue_.empty())
+            while (!g_shutdown && !ready_queue_.empty())
             {
                 cur_co_ = std::move(ready_queue_.front());
                 ready_queue_.pop();
@@ -91,9 +92,12 @@ namespace hpc_coroutine
                 cur_co_->resume();
             }
 
+            if (g_shutdown)
+                break;
+
             // process the epoll
-            int nready = process_epoll();
-            assert(nready >= 0);
+            if (process_epoll() < 0)
+                break;
         }
     }
 
@@ -104,8 +108,13 @@ namespace hpc_coroutine
         int nready = epoll_wait(epfd_, events_, EPOLL_EVENTS_SIZE, wait_time);
         if (nready < 0)
         {
-            KV_ERROR("Error epoll_wait");
-            return -1;
+            // epoll_wait is never auto-restarted; a delivered signal just wakes us up.
+            if (errno != EINTR)
+            {
+                KV_ERROR("Error epoll_wait");
+                return -1;
+            }
+            nready = 0;
         }
 
         timer_m.handle_expired();

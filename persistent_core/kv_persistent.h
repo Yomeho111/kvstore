@@ -28,6 +28,8 @@ namespace kv_persistent
     inline constexpr const char *RDB_TMP_PATH{"rdb_data/kv_0.rdt.tmp"};
     inline constexpr const char *RDB_FOLDER{"rdb_data"};
 
+    inline constexpr const size_t IOBUFFER_SIZE{1024 * 512};
+
     size_t get_resp_size(const size_t command_len, size_t key_len, size_t value_len);
 
     int format_resp(
@@ -37,9 +39,24 @@ namespace kv_persistent
         const string &value,
         char *p);
 
+    struct DataField
+    {
+        char *data;
+        size_t size;
+    };
+
+    struct ConstDataField
+    {
+        const char *data;
+        size_t size;
+    };
+
     class StoreEngine
     {
         using CommandType = uint16_t;
+
+        // io_uring pipeline depth: up to this many record writes are kept in flight.
+        static constexpr unsigned AOF_DEPTH = 64;
 
     public:
         static StoreEngine &instance();
@@ -57,12 +74,7 @@ namespace kv_persistent
 
         StoreEngine() = default;
 
-        ~StoreEngine()
-        {
-            _close_file();
-            if (ring_ready_)
-                io_uring_queue_exit(&ring_);
-        }
+        ~StoreEngine();
 
         int _init();
 
@@ -76,10 +88,31 @@ namespace kv_persistent
 
         int _append(const char *buf, size_t len);
 
+        int _commit_io_uring(int high_watermark);
+
+        int _submit_io_write();
+
+        int _reap_one();
+
+        int _flush();
+
+        int _make_up_dump_buffer(const ConstDataField &command_data, const DataField &buffer_data, const string &key, const string &value, size_t resp_size);
+
         bool ring_ready_ = false;
         int file_idx_ = 0;
         int fd_ = -1;
         size_t file_size = 0;
+
+        struct write_slot_t
+        {
+            unsigned seq{0};
+            int offset{0};
+            char *iov[AOF_DEPTH]{nullptr};
+            size_t written_size{0};
+        } write_slot;
+
+        int inflight_{0};
+
         struct io_uring ring_;
     };
 
@@ -138,13 +171,14 @@ namespace kv_persistent
 
         int _reap_one(); // wait for one write completion and validate it
 
-        int fd_ = -1;
-        size_t write_off_ = 0;
-        struct io_uring ring_;
         bool ring_ready_ = false;
         unsigned inflight_ = 0;
         unsigned seq_ = 0;
+        int fd_ = -1;
+        size_t write_off_ = 0;
         WriteSlot slots_[RDB_DEPTH];
+
+        struct io_uring ring_;
     };
 } // namespace kv_persistent
 

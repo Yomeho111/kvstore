@@ -4,6 +4,7 @@
 #include <ucontext.h>
 #include <sys/epoll.h>
 #include <poll.h>
+#include <csignal>
 #include <unordered_map>
 #include <queue>
 #include <memory>
@@ -16,6 +17,10 @@
 
 namespace hpc_coroutine
 {
+    // Raised from a signal handler, so writing it must stay async-signal-safe.
+    // run() polls it and returns, letting main() unwind and flush normally.
+    inline volatile sig_atomic_t g_shutdown{0};
+
     class Coroutine;
 
     using Coroutine_t = std::unique_ptr<Coroutine>;

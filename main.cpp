@@ -23,9 +23,10 @@
 
 void handler(int sig)
 {
+    (void)sig;
     const char msg[] = "Close the server\n";
     (void)!write(STDOUT_FILENO, msg, sizeof(msg) - 1);
-    exit(sig);
+    hpc_coroutine::g_shutdown = 1;
 }
 
 static void usage(const char *prog)

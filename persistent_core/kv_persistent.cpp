@@ -141,15 +141,9 @@ namespace kv_persistent
         return true;
     }
 
-    struct resp_field
-    {
-        const char *data;
-        size_t len;
-    };
-
     // Parses "*<n>\r\n" followed by n bulk strings. The fields point into `data`.
     // Returns the number of fields parsed, or -1 when the payload is malformed.
-    static int parse_resp_array(const char *data, size_t size, resp_field *out, int max_fields)
+    static int parse_resp_array(const char *data, size_t size, ConstDataField *out, int max_fields)
     {
         size_t offset = 0;
 
@@ -190,7 +184,7 @@ namespace kv_persistent
                 return -1;
 
             out[i].data = data + offset;
-            out[i].len = len;
+            out[i].size = len;
             offset += len;
 
             if (offset + 1 >= size || data[offset] != '\r' || data[offset + 1] != '\n')
@@ -226,34 +220,133 @@ namespace kv_persistent
 
     int StoreEngine::_init()
     {
+        int i{0};
+        for (; i < AOF_DEPTH; i++)
+        {
+            write_slot.iov[i] = (char *)allocator::kv_malloc(IOBUFFER_SIZE);
+            if (!write_slot.iov[i])
+            {
+                goto clean;
+            }
+        }
+        write_slot.offset = 0;
+        write_slot.seq = 0;
+        write_slot.written_size = 0;
+
+        if (!ring_ready_)
+        {
+            if (io_uring_queue_init(AOF_DEPTH, &ring_, 0) < 0)
+                return -6;
+            ring_ready_ = true;
+        }
+
         return 0;
+
+    clean:
+
+        for (i -= 1; i >= 0; i--)
+        {
+            allocator::kv_free(write_slot.iov[i]);
+            write_slot.iov[i] = nullptr;
+        }
+
+        return -1;
+    }
+
+    StoreEngine::~StoreEngine()
+    {
+        _close_file();
+
+        if (ring_ready_)
+        {
+            io_uring_queue_exit(&ring_);
+            ring_ready_ = false;
+        }
+
+        for (int i = 0; i < AOF_DEPTH; i++)
+        {
+            if (write_slot.iov[i])
+            {
+                allocator::kv_free(write_slot.iov[i]);
+                write_slot.iov[i] = nullptr;
+            }
+        }
     }
 
     int StoreEngine::dump_record(CommandType command, const string &key, const string &value)
     {
         size_t key_len = key.size();
-        size_t val_len = value.size();
         if (!(command == kv_protocal::KVS_SET || command == kv_protocal::KVS_DEL || command == kv_protocal::KVS_MOD) || key_len == 0)
             return -1;
 
         if (fd_ < 0)
         {
             if (_open_file(file_idx_) < 0)
+                return -2;
+        }
+        const char *command_str = kv_protocal::command_str[command];
+        size_t command_size = strnlen(command_str, 32);
+        size_t resp_size = get_resp_size(command_size, key.size(), value.size());
+        size_t buffer_size = sizeof(MAGIC) + sizeof(uint32_t) + sizeof(resp_size) + resp_size;
+
+        if (IOBUFFER_SIZE - write_slot.offset >= buffer_size)
+        {
+            _make_up_dump_buffer({command_str, command_size}, {write_slot.iov[write_slot.seq] + write_slot.offset, buffer_size}, key, value, resp_size);
+            write_slot.offset += buffer_size;
+
+            if (write_slot.offset == IOBUFFER_SIZE)
+            {
+                if (_flush() < 0)
+                    return -3;
+            }
+        }
+        else
+        {
+            if (_flush() < 0)
                 return -3;
+
+            if (IOBUFFER_SIZE - write_slot.offset >= buffer_size)
+            {
+                _make_up_dump_buffer({command_str, command_size}, {write_slot.iov[write_slot.seq] + write_slot.offset, buffer_size}, key, value, resp_size);
+                write_slot.offset += buffer_size;
+
+                if (write_slot.offset == IOBUFFER_SIZE)
+                {
+                    if (_flush() < 0)
+                        return -3;
+                }
+            }
+            else
+            {
+                char *buffer = (char *)allocator::kv_malloc(buffer_size);
+                if (!buffer)
+                    return -4;
+
+                _make_up_dump_buffer({command_str, command_size}, {buffer, buffer_size}, key, value, resp_size);
+
+                if (_append(buffer, buffer_size) < 0)
+                {
+                    allocator::kv_free(buffer);
+                    return -5;
+                }
+                allocator::kv_free(buffer);
+            }
         }
 
-        uint32_t crc = 0;
-        size_t command_size = strnlen(kv_protocal::command_str[command], 32);
-        size_t resp_size = get_resp_size(command_size, key.size(), value.size());
-        size_t buffer_size = sizeof(MAGIC) + sizeof(crc) + sizeof(resp_size) + resp_size;
+        file_size += buffer_size;
 
-        char *buffer = (char *)allocator::kv_malloc(buffer_size);
-        if (!buffer)
-            return -2;
+        if (_switch_new_file() < 0)
+        {
+            return -6;
+        }
 
-        char *cur = buffer;
+        return 0;
+    }
 
-        // write magic
+    int StoreEngine::_make_up_dump_buffer(const ConstDataField &command_data, const DataField &buffer_data, const string &key, const string &value, size_t resp_size)
+    {
+        uint32_t crc{0};
+        char *cur = buffer_data.data;
         memcpy(cur, &MAGIC, sizeof(MAGIC));
         cur += sizeof(MAGIC);
 
@@ -269,62 +362,102 @@ namespace kv_persistent
         cur += sizeof(resp_size);
 
         // format resp
-        format_resp(kv_protocal::command_str[command], command_size, key, value, cur);
+        format_resp(command_data.data, command_data.size, key, value, cur);
 
         // compute the crc32 over the payload and store it right after the magic
-        crc = checksum::crc32(payload, buffer_size - sizeof(MAGIC) - sizeof(crc));
+        crc = checksum::crc32(payload, buffer_data.size - sizeof(MAGIC) - sizeof(crc));
         memcpy(crc_slot, &crc, sizeof(crc));
-
-        // append the serialized record to disk through io_uring
-        if (_append(buffer, buffer_size) < 0)
-        {
-            allocator::kv_free(buffer);
-            return -5;
-        }
-
-        file_size += buffer_size;
-
-        if (file_size > MAX_BYTES_PER_FILE)
-        {
-            int ret = _switch_new_file();
-            if (ret < 0)
-            {
-                allocator::kv_free(buffer);
-                return -6;
-            }
-        }
-
-        allocator::kv_free(buffer);
         return 0;
     }
 
     int StoreEngine::_append(const char *buf, size_t len)
     {
-        size_t written = 0;
-        while (written < len)
+        size_t submitted{0};
+        size_t left{len};
+        while (submitted < len)
         {
-            struct io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
-            if (sqe == nullptr)
-                return -1;
+            size_t space = IOBUFFER_SIZE - write_slot.offset;
+            size_t write_len = space > left ? left : space;
+            memcpy(write_slot.iov[write_slot.seq] + write_slot.offset, buf + submitted, write_len);
 
-            io_uring_prep_write(sqe, fd_, buf + written, static_cast<unsigned>(len - written), file_size + written);
+            submitted += write_len;
+            left -= write_len;
+            write_slot.offset += write_len;
 
-            // submit the write and wait for its completion in a single syscall
-            if (io_uring_submit_and_wait(&ring_, 1) < 0)
-                return -1;
-
-            struct io_uring_cqe *cqe = nullptr;
-            if (io_uring_peek_cqe(&ring_, &cqe) < 0 || cqe == nullptr)
-                return -1;
-
-            int res = cqe->res;
-            io_uring_cqe_seen(&ring_, cqe);
-
-            if (res <= 0)
-                return -1;
-
-            written += static_cast<size_t>(res);
+            if (write_slot.offset == IOBUFFER_SIZE)
+            {
+                if (_flush() < 0)
+                    return -1;
+            }
         }
+        return 0;
+    }
+
+    int StoreEngine::_submit_io_write()
+    {
+        if (write_slot.offset == 0)
+            return 0;
+
+        struct io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
+        if (sqe == nullptr)
+        {
+            if (io_uring_submit(&ring_) < 0)
+                return -2;
+            sqe = io_uring_get_sqe(&ring_);
+            if (sqe == nullptr)
+                return -2;
+        }
+
+        io_uring_prep_write(sqe, fd_, write_slot.iov[write_slot.seq], write_slot.offset, write_slot.written_size);
+
+        io_uring_sqe_set_data64(sqe, write_slot.offset);
+
+        write_slot.written_size += write_slot.offset;
+        inflight_++;
+        write_slot.seq = (write_slot.seq + 1) & (AOF_DEPTH - 1);
+        write_slot.offset = 0;
+        return 0;
+    }
+
+    int StoreEngine::_commit_io_uring(int high_watermark)
+    {
+        if (!ring_ready_)
+            return 0;
+
+        if (io_uring_submit(&ring_) < 0)
+            return -1;
+        while (inflight_ > high_watermark)
+            if (_reap_one() < 0)
+                return -2;
+        return 0;
+    }
+
+    int StoreEngine::_reap_one()
+    {
+        struct io_uring_cqe *cqe = nullptr;
+        if (io_uring_wait_cqe(&ring_, &cqe) < 0)
+            return -1;
+
+        int res = cqe->res;
+        size_t expected = io_uring_cqe_get_data64(cqe);
+        io_uring_cqe_seen(&ring_, cqe);
+        inflight_--;
+
+        // a write to a regular file writes everything unless it errored
+        if (res < 0 || static_cast<size_t>(res) != expected)
+            return -1;
+        return 0;
+    }
+
+    int StoreEngine::_flush()
+    {
+        if (inflight_ >= AOF_DEPTH - 1)
+        {
+            if (_commit_io_uring(AOF_DEPTH / 2) < 0)
+                return -1;
+        }
+        if (_submit_io_write())
+            return -2;
         return 0;
     }
 
@@ -459,23 +592,23 @@ namespace kv_persistent
             }
 
             // [0] command, [1] key, [2] value (absent when the value is empty)
-            resp_field fields[3];
+            ConstDataField fields[3];
             int field_count = parse_resp_array(resp, resp_size, fields, 3);
-            if (field_count < 2 || fields[1].len == 0)
+            if (field_count < 2 || fields[1].size == 0)
             {
                 rc = -4;
                 break;
             }
 
             const char *key = fields[1].data;
-            size_t key_len = fields[1].len;
+            size_t key_len = fields[1].size;
             const char *value = field_count > 2 ? fields[2].data : nullptr;
-            size_t val_len = field_count > 2 ? fields[2].len : 0;
+            size_t val_len = field_count > 2 ? fields[2].size : 0;
 
             // the engine copies key/value into its own storage, so passing pointers
             // into the read-only mapping is safe
             int ret = 0;
-            switch (command_from_str(fields[0].data, fields[0].len))
+            switch (command_from_str(fields[0].data, fields[0].size))
             {
                 case kv_protocal::KVS_SET:
                     ret = engine->set(key, key_len, value, val_len, nullptr, false);
@@ -535,14 +668,6 @@ namespace kv_persistent
         fs::path file_path =
             folder / (std::string(STORE_FILE_ROOT) + "_" + std::to_string(idx) + ".dt");
 
-        // set up the io_uring submission ring once; it is reused across file rotations
-        if (!ring_ready_)
-        {
-            if (io_uring_queue_init(KVS_URING_DEPTH, &ring_, 0) < 0)
-                return -6;
-            ring_ready_ = true;
-        }
-
         int fd = ::open(file_path.c_str(), O_WRONLY | O_CREAT, 0644);
         if (fd < 0)
             return -5;
@@ -557,6 +682,7 @@ namespace kv_persistent
 
         fd_ = fd;
         file_size = static_cast<size_t>(end);
+        write_slot.written_size = file_size;
         return 0;
     }
 
@@ -564,22 +690,31 @@ namespace kv_persistent
     {
         if (fd_ >= 0)
         {
+            _submit_io_write();
+            _commit_io_uring(0);
+
+            ::fdatasync(fd_);
             ::close(fd_);
             fd_ = -1;
         }
+
         file_size = 0;
+        write_slot.written_size = 0;
     }
 
     int StoreEngine::_switch_new_file()
     {
-        _close_file();
+        if (file_size > MAX_BYTES_PER_FILE)
+        {
+            _close_file();
 
-        int next_idx = file_idx_ + 1;
-        int ret = _open_file(next_idx);
-        if (ret < 0)
-            return ret;
+            int next_idx = file_idx_ + 1;
+            int ret = _open_file(next_idx);
+            if (ret < 0)
+                return ret;
 
-        file_idx_ = next_idx;
+            file_idx_ = next_idx;
+        }
         return 0;
     }
 
@@ -594,7 +729,10 @@ namespace kv_persistent
     SnapshotEngine::~SnapshotEngine()
     {
         if (ring_ready_)
+        {
             io_uring_queue_exit(&ring_);
+            ring_ready_ = false;
+        }
         if (fd_ >= 0)
             ::close(fd_);
     }
