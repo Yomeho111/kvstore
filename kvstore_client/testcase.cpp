@@ -16,7 +16,7 @@
 // How many commands are pipelined before the replies are drained.
 constexpr int BATCH_SIZE = 128;
 
-constexpr int UNIQUE_KV_COUNT = 100000;
+constexpr int UNIQUE_KV_COUNT = 1000000;
 constexpr size_t LARGE_VALUE_LEN = 13000;
 
 // ===========================================================================
