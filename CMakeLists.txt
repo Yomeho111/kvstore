@@ -7,10 +7,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-add_compile_options($<$<CONFIG:Debug>:-g> $<$<CONFIG:Debug>:-O0>)
+add_compile_options(
+    $<$<CONFIG:Debug>:-g>
+    $<$<CONFIG:Debug>:-O0>
+
+    $<$<CONFIG:Release>:-O3>
+)
 
 # set(NETWORK "REACTOR" CACHE STRING "Network backend to build: REACTOR, PROACTOR, or COROUTINE")
 # set_property(CACHE NETWORK PROPERTY STRINGS REACTOR PROACTOR COROUTINE)
@@ -100,7 +105,16 @@ target_include_directories(kvstore_core
         ${PROJECT_SOURCE_DIR}/timer
         ${PROJECT_SOURCE_DIR}/replicate
         ${PROJECT_SOURCE_DIR}/third_party/hiredis
+        ${PROJECT_SOURCE_DIR}/third_party/isa-l/include
 )
+
+set(ISAL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ISAL_BUILD_PERF_TESTS OFF CACHE BOOL "" FORCE)
+set(ISAL_BUILD_FUZZ_TESTS OFF CACHE BOOL "" FORCE)
+set(ISAL_BUILD_ISAL_SHIM OFF CACHE BOOL "" FORCE)
+set(ISAL_BUILD_IGZIP_CLI OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(third_party/isa-l EXCLUDE_FROM_ALL)
 
 
 target_compile_definitions(kvstore_core
@@ -193,7 +207,7 @@ target_include_directories(kvstore_backend PUBLIC
         ${PROJECT_SOURCE_DIR}/network/my_coroutine/my_coroutine
 )
 target_compile_definitions(kvstore_backend PUBLIC COROUTINE)
-target_link_libraries(kvstore_backend PUBLIC ${CMAKE_DL_LIBS})
+target_link_libraries(kvstore_backend PUBLIC ${CMAKE_DL_LIBS} isal)
 
 add_executable(kvstore main.cpp)
 target_link_libraries(kvstore PRIVATE kvstore_backend)

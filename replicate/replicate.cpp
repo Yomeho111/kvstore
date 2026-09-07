@@ -566,7 +566,8 @@ namespace replicate
             return -3;
         }
 
-        ftruncate(fd, total_size);
+        if (ftruncate(fd, total_size) < 0)
+            return -3;
 
         char *p = (char *)mmap(NULL, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         if (p == MAP_FAILED)
