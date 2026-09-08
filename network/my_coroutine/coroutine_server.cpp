@@ -159,6 +159,63 @@ namespace hpc_coroutine
         allocator::kv_free(buf);
     }
 
+    void resp_slave_process(int fd)
+    {
+        redisReader *reader = redisReaderCreate();
+        if (reader == nullptr)
+            return;
+
+        char *buf = (char *)allocator::kv_malloc(RESP_RECV_BUF_SIZE);
+        if (!buf)
+        {
+            redisReaderFree(reader);
+            return;
+        }
+        while (1)
+        {
+            int n = recv(fd, buf, RESP_RECV_BUF_SIZE, 0);
+            if (n <= 0)
+                break;
+
+            if (redisReaderFeed(reader, buf, n) != REDIS_OK)
+                break;
+
+            void *reply = nullptr;
+
+            // A single read may carry several pipelined commands; drain them all.
+            while (redisReaderGetReply(reader, &reply) == REDIS_OK && reply != nullptr)
+            {
+                redisReply *rr = static_cast<redisReply *>(reply);
+                if (rr->type == REDIS_REPLY_ARRAY && rr->elements > 0)
+                {
+                    int argc = static_cast<int>(rr->elements);
+                    if (argc <= RESP_MAX_ARGS)
+                    {
+                        char *argv[RESP_MAX_ARGS];
+                        size_t argvlen[RESP_MAX_ARGS];
+                        for (int i = 0; i < argc; i++)
+                        {
+                            argv[i] = rr->element[i]->str;
+                            argvlen[i] = rr->element[i]->len;
+                        }
+                        const uint64_t cmd = kv_protocal::cmd_tag(argv[0], argvlen[0]);
+                        if (cmd == kv_protocal::KV_SET || cmd == kv_protocal::KV_DEL || cmd == kv_protocal::KV_PEXPIRE || cmd == kv_protocal::KV_SETEX || cmd == kv_protocal::KV_PSETEX || cmd == kv_protocal::KV_EXPIRE)
+                            kv_protocal::KvStoreProtocal::instance().process_resp_command(argc, argv, argvlen, cmd, kv_protocal::RespSink{});
+                    }
+                }
+
+                freeReplyObject(reply);
+                reply = nullptr;
+            }
+
+            if (reader->err)
+                break;
+        }
+
+        redisReaderFree(reader);
+        allocator::kv_free(buf);
+    }
+
     void server_process(int fd)
     {
         // Detect the wire protocol from the first byte: RESP multi-bulk commands
@@ -422,7 +479,7 @@ namespace hpc_coroutine
             goto clean;
         }
 
-        resp_server_process(fd);
+        resp_slave_process(fd);
 
     clean:
         if (thr.joinable())

@@ -73,6 +73,32 @@ namespace kv_protocal
 
     inline constexpr const char *SYNCFIN_RESP = "*1\r\n$7\r\nSYNCFIN\r\n";
 
+    // Where a command's reply goes. A replica applies commands without
+    // answering, so it passes a default-constructed (discarding) sink and the
+    // reply is never assembled.
+    class RespSink
+    {
+    public:
+        RespSink() = default;
+        RespSink(string &out) : _out(&out) {}
+
+        RespSink &operator+=(const char *s)
+        {
+            if (_out)
+                *_out += s;
+            return *this;
+        }
+
+        void append(const char *data, size_t len)
+        {
+            if (_out)
+                _out->append(data, len);
+        }
+
+    private:
+        string *_out{nullptr};
+    };
+
     template <typename KvEngine>
     class KvProtocal
     {
@@ -205,7 +231,7 @@ namespace kv_protocal
         // hiredis reader in the reactor). The RESP-encoded reply is appended to
         // `out`. Returns 0 normally, or 1 if the connection should be closed
         // after the reply is sent (QUIT).
-        int process_resp_command(int argc, char **argv, size_t *argvlen, const uint64_t cmd, string &out)
+        int process_resp_command(int argc, char **argv, size_t *argvlen, const uint64_t cmd, RespSink out)
         {
             if (argc <= 0 || argv == nullptr || argvlen == nullptr || argv[0] == nullptr)
             {
@@ -512,14 +538,14 @@ namespace kv_protocal
         KvProtocal() {}
         ~KvProtocal() {}
 
-        static void _resp_append_int(string &out, long long v)
+        static void _resp_append_int(RespSink &out, long long v)
         {
             char buf[32];
             int n = snprintf(buf, sizeof(buf), ":%lld\r\n", v);
             out.append(buf, n);
         }
 
-        static void _resp_append_bulk(string &out, const char *data, size_t len)
+        static void _resp_append_bulk(RespSink &out, const char *data, size_t len)
         {
             char hdr[32];
             int n = snprintf(hdr, sizeof(hdr), "$%zu\r\n", len);
