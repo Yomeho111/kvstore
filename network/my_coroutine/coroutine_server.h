@@ -41,8 +41,6 @@ namespace hpc_coroutine
         int start_eventloop();
 
     private:
-        int init_server(uint16_t port);
-
         uint16_t _port;
         int _fd_list[PORT_NUM];
     };
@@ -50,18 +48,29 @@ namespace hpc_coroutine
     class TcpSlaveServer
     {
     public:
-        TcpSlaveServer(uint16_t port, uint16_t port_rdma, const char *ip, const char *ip_rdma)
-            : _master_port(port), _port_rdma(port_rdma), _master_ip(ip), _ip_rdma(ip_rdma) {}
+        TcpSlaveServer(uint16_t port, uint16_t port_rdma, uint16_t my_port, const char *ip, const char *ip_rdma)
+            : _master_port(port), _port_rdma(port_rdma), _my_port(my_port), _master_ip(ip), _ip_rdma(ip_rdma) {}
 
-        ~TcpSlaveServer() = default;
+        ~TcpSlaveServer()
+        {
+            for (int i = 0; i < PORT_NUM; i++)
+            {
+                if (_fd_list[i] >= 0)
+                    close(_fd_list[i]);
+            }
+        }
+
+        int init();
 
         int start_eventloop();
 
     private:
         uint16_t _master_port;
         uint16_t _port_rdma;
+        uint16_t _my_port;
         const char *_master_ip;
         const char *_ip_rdma;
+        int _fd_list[PORT_NUM];
     };
 } // namespace hpc_coroutine
 

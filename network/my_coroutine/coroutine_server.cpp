@@ -15,8 +15,12 @@
 
 namespace hpc_coroutine
 {
-    void server(int fd);
-    void resp_server_process(int fd);
+
+    typedef void (*ProcessFunc)(int);
+
+    static void server(int fd, ProcessFunc process_func);
+    static void resp_server_process(int fd);
+    static int init_server(uint16_t port);
 
     int TcpServers::init()
     {
@@ -37,14 +41,14 @@ namespace hpc_coroutine
         for (int i = 0; i < PORT_NUM; i++)
         {
             if (_fd_list[i] != -1)
-                hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server, _fd_list[i]);
+                hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server, _fd_list[i], resp_server_process);
         }
 
         hpc_coroutine::CoroutineSched::get_coroutine_sched()->run();
         return 0;
     }
 
-    int TcpServers::init_server(uint16_t port)
+    static int init_server(uint16_t port)
     {
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0)
@@ -77,7 +81,7 @@ namespace hpc_coroutine
     // Handle a RESP (Redis protocol) client connection. Mirrors the reactor's
     // resp_recv_callback but in the coroutine's synchronous style: the hooked
     // recv()/send() yield the coroutine while waiting on the socket.
-    void resp_server_process(int fd)
+    static void resp_server_process(int fd)
     {
         redisReader *reader = redisReaderCreate();
         if (reader == nullptr)
@@ -159,7 +163,7 @@ namespace hpc_coroutine
         allocator::kv_free(buf);
     }
 
-    void resp_slave_process(int fd)
+    static void resp_slave_process(int fd)
     {
         redisReader *reader = redisReaderCreate();
         if (reader == nullptr)
@@ -216,7 +220,7 @@ namespace hpc_coroutine
         allocator::kv_free(buf);
     }
 
-    void server_process(int fd)
+    static void server_process(int fd)
     {
         // Detect the wire protocol from the first byte: RESP multi-bulk commands
         // (redis-cli / hiredis / redis-benchmark) always begin with '*'.
@@ -362,7 +366,7 @@ namespace hpc_coroutine
         }
     }
 
-    void server(int fd)
+    static void server(int fd, ProcessFunc process_func)
     {
         struct sockaddr_in remote;
 
@@ -387,11 +391,11 @@ namespace hpc_coroutine
             }
 #endif
             // printf("new client comming\n");
-            hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(resp_server_process, cli_fd);
+            hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(process_func, cli_fd);
         }
     }
 
-    void slave_process(int fd, uint16_t port_rdma, const char *ip_rdma)
+    static void slave_process(int fd, uint16_t port_rdma, const char *ip_rdma)
     {
         if (!ip_rdma || fd < 0)
             return;
@@ -492,7 +496,7 @@ namespace hpc_coroutine
     // Runs inside a coroutine: the hooked socket()/connect()/recv()/send()
     // yield to the scheduler, so they must NOT be called before the scheduler
     // is running (i.e. not from TcpSlaveServer::init()).
-    void slave_run(uint16_t port, uint16_t port_rdma, const char *ip, const char *ip_rdma)
+    static void slave_run(uint16_t port, uint16_t port_rdma, const char *ip, const char *ip_rdma)
     {
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0)
@@ -522,9 +526,29 @@ namespace hpc_coroutine
         slave_process(fd, port_rdma, ip_rdma);
     }
 
+    int TcpSlaveServer::init()
+    {
+        for (int i = 0; i < PORT_NUM; i++)
+        {
+            int sockfd = init_server(_my_port + i);
+            if (sockfd == -1)
+            {
+                KV_ERROR("init_server");
+            }
+            _fd_list[i] = sockfd;
+        }
+        return 0;
+    }
+
     int TcpSlaveServer::start_eventloop()
     {
         hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(slave_run, _master_port, _port_rdma, _master_ip, _ip_rdma);
+        hpc_coroutine::CoroutineSched::get_coroutine_sched()->run();
+        for (int i = 0; i < PORT_NUM; i++)
+        {
+            if (_fd_list[i] != -1)
+                hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server, _fd_list[i], resp_server_process);
+        }
         hpc_coroutine::CoroutineSched::get_coroutine_sched()->run();
         return 0;
     }

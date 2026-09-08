@@ -83,7 +83,7 @@ namespace hpc_coroutine
     private:
         // singleton
         CoroutineSched()
-            : epfd_(-1), spawned_coroutines_(0), events_(nullptr)
+            : is_running_(false), epfd_(-1), spawned_coroutines_(0), events_(nullptr)
         {
         }
         ~CoroutineSched();
@@ -96,6 +96,7 @@ namespace hpc_coroutine
         CoroutineSched &operator=(const CoroutineSched &) = delete;
         CoroutineSched &operator=(CoroutineSched &&) = delete;
 
+        bool is_running_;
         int epfd_;
         uint32_t spawned_coroutines_;
         Coroutine_t cur_co_;

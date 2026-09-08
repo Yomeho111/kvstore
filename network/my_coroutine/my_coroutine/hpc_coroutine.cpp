@@ -73,6 +73,7 @@ namespace hpc_coroutine
 
     void CoroutineSched::run()
     {
+        is_running_ = true;
         while (!g_shutdown)
         {
             // first process ready
@@ -91,6 +92,7 @@ namespace hpc_coroutine
             if (process_epoll() < 0)
                 break;
         }
+        is_running_ = false;
     }
 
     int CoroutineSched::process_epoll()
@@ -129,7 +131,7 @@ namespace hpc_coroutine
     int CoroutineSched::poll_inner(struct ::pollfd *fds, ::nfds_t nfds)
     {
         int nready = ::poll(fds, nfds, 0);
-        if (nready == 0)
+        if (nready == 0 && is_running_)
         {
             // we need to register the fd into epoll, and also put the current co to wait_table_
             uint32_t co_id = cur_co_->get_id();
