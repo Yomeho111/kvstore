@@ -125,7 +125,8 @@ namespace hpc_coroutine
                             argv[i] = rr->element[i]->str;
                             argvlen[i] = rr->element[i]->len;
                         }
-                        if (kv_protocal::KvStoreProtocal::instance().process_resp_command(argc, argv, argvlen, out) == 1)
+                        const uint64_t cmd = kv_protocal::cmd_tag(argv[0], argvlen[0]);
+                        if (kv_protocal::KvStoreProtocal::instance().process_resp_command(argc, argv, argvlen, cmd, out) == 1)
                             close_after = true;
                     }
                 }
