@@ -73,7 +73,7 @@ namespace hpc_coroutine
 
     void CoroutineSched::run()
     {
-        while (!g_shutdown && !empty())
+        while (!g_shutdown)
         {
             // first process ready
             while (!g_shutdown && !ready_queue_.empty())
@@ -84,7 +84,7 @@ namespace hpc_coroutine
                 cur_co_->resume();
             }
 
-            if (g_shutdown)
+            if (g_shutdown || empty())
                 break;
 
             // process the epoll
@@ -163,6 +163,24 @@ namespace hpc_coroutine
             return -1;
         }
 
+        return 0;
+    }
+
+    int CoroutineSched::epoll_clear(int fd)
+    {
+        int ret = epoll_ctl(epfd_, EPOLL_CTL_DEL, fd, nullptr);
+
+        if (ret)
+        {
+            if (errno == ENOENT)
+            {
+                return 0;
+            }
+            else if (errno == EBADF)
+            {
+                return -1;
+            }
+        }
         return 0;
     }
 

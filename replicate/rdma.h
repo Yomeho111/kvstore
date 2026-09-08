@@ -11,6 +11,7 @@
 #define RDMA_CQ_DEPTH 4096
 #define MAGIC 0x234324
 #define RDMA_TIMEOUT_MS 100
+#define MAX_REP_FILE_SIZE ((size_t)1024 * 1024 * 1024)
 
 namespace replicate
 {

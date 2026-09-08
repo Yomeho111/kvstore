@@ -51,16 +51,16 @@ namespace hpc_coroutine
     {
     public:
         TcpSlaveServer(uint16_t port, uint16_t port_rdma, const char *ip, const char *ip_rdma)
-            : _port(port), _port_rdma(port_rdma), _ip(ip), _ip_rdma(ip_rdma) {}
+            : _master_port(port), _port_rdma(port_rdma), _master_ip(ip), _ip_rdma(ip_rdma) {}
 
         ~TcpSlaveServer() = default;
 
         int start_eventloop();
 
     private:
-        uint16_t _port;
+        uint16_t _master_port;
         uint16_t _port_rdma;
-        const char *_ip;
+        const char *_master_ip;
         const char *_ip_rdma;
     };
 } // namespace hpc_coroutine

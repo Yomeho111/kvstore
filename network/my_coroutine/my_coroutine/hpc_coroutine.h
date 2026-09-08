@@ -77,6 +77,9 @@ namespace hpc_coroutine
         // do schedule if there is no events
         int poll_inner(struct ::pollfd *fds, nfds_t nfds);
 
+        // clear the fd from epfd
+        int epoll_clear(int fd);
+
     private:
         // singleton
         CoroutineSched()

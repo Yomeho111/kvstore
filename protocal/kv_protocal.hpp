@@ -615,7 +615,10 @@ namespace kv_protocal
                 return -2;
 
             KV_INFO("Master rdma init succeed");
-            if (master.send(kv_persistent::RDB_TMP_PATH) < 0)
+            int ret = master.send(kv_persistent::RDB_TMP_PATH);
+            if (ret == 1)
+                KV_INFO("Master has no data");
+            else if (ret < 0)
                 return -3;
 
             KV_INFO("Master rdma send succeed");

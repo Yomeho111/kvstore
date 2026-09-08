@@ -134,6 +134,8 @@ static int rdma_alloc_buffer(struct rdma_cm_id *cm_id, struct ibv_pd *pd, size_t
 
     if (cm->rbuff && cm->sbuff)
     {
+        memset(cm->rbuff, 0, recv_size);
+        memset(cm->sbuff, 0, send_size);
         cm->send_mr = ibv_reg_mr(pd, cm->sbuff, send_size, 0);
         cm->recv_mr = ibv_reg_mr(pd, cm->rbuff, recv_size, IBV_ACCESS_LOCAL_WRITE);
     }
@@ -370,17 +372,9 @@ namespace replicate
 
         size_t total = st.st_size;
 
-        char *p = (char *)::mmap(nullptr, total, PROT_READ, MAP_PRIVATE, fd, 0);
-        ::close(fd);
-        if (p == MAP_FAILED)
-        {
-            return -3;
-        }
-
-        size_t idx = 0;
         struct ibv_wc wc;
-
         struct file_info type;
+        memset(&wc, 0, sizeof(wc));
         memset(&type, 0, sizeof(type));
 
         type.magic = MAGIC;
@@ -391,9 +385,22 @@ namespace replicate
         if (0 != rdma_poll_wc(send_cq_, &wc) || wc.opcode != IBV_WC_SEND)
         {
             KV_ERROR("rdma_poll_wc");
-            ::munmap(p, total);
             return -4;
         }
+
+        if (total == 0)
+        {
+            return 1;
+        }
+
+        char *p = (char *)::mmap(nullptr, total, PROT_READ, MAP_PRIVATE, fd, 0);
+        ::close(fd);
+        if (p == MAP_FAILED)
+        {
+            return -3;
+        }
+
+        size_t idx = 0;
 
         while (idx < total)
         {
@@ -553,12 +560,26 @@ namespace replicate
         if (0 != rdma_poll_wc(recv_cq_, &wc) || wc.opcode != IBV_WC_RECV)
             return -1;
 
+        if (wc.byte_len < sizeof(struct file_info))
+            return -2;
+
         struct file_info fi;
         memset(&fi, 0, sizeof(fi));
         memcpy(&fi, cm->rbuff, sizeof(struct file_info));
         if (fi.magic != MAGIC)
             return -2;
         size_t total_size = fi.total;
+
+        if (total_size == 0)
+        {
+            return 1;
+        }
+        else if (total_size > MAX_REP_FILE_SIZE)
+        {
+            KV_ERROR("announced file size %zu exceeds the %zu byte limit",
+                     total_size, (size_t)MAX_REP_FILE_SIZE);
+            return -2;
+        }
 
         int fd = open(file_path, O_RDWR | O_CREAT, 0666);
         if (fd < 0)
@@ -567,7 +588,10 @@ namespace replicate
         }
 
         if (ftruncate(fd, total_size) < 0)
+        {
+            close(fd);
             return -3;
+        }
 
         char *p = (char *)mmap(NULL, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         if (p == MAP_FAILED)
@@ -611,9 +635,16 @@ namespace replicate
                 return -5;
             }
 
-            size_t chunk = total_size - idx;
-            if (chunk > cm->rbuff_size)
-                chunk = cm->rbuff_size;
+            size_t remaining = total_size - idx;
+            size_t chunk = wc.byte_len;
+            if (chunk == 0 || chunk > remaining)
+            {
+                KV_ERROR("chunk of %zu bytes does not fit the %zu bytes left of %s",
+                         chunk, remaining, file_path);
+                munmap(p, total_size);
+                close(fd);
+                return -5;
+            }
 
             memcpy(p + idx, cm->rbuff, chunk);
             idx += chunk;

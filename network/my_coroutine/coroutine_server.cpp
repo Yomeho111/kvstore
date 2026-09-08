@@ -412,7 +412,7 @@ namespace hpc_coroutine
 
         // use sub-thread to receive full sync data
         std::thread thr{[&slave, &ret]
-                        {ret = slave.listen(); ret = slave.recv(replicate::SLAVE_TMP); }};
+                        {ret = slave.listen(); if (ret == 0) ret = slave.recv(replicate::SLAVE_TMP); }};
 
         // make command for sync
         const char *command = kv_protocal::command_str[kv_protocal::KVS_SYNC];
@@ -465,7 +465,7 @@ namespace hpc_coroutine
         KV_INFO("Load temp data");
 
         // remove tmp data
-        if (remove(replicate::SLAVE_TMP) != 0)
+        if (access(replicate::SLAVE_TMP, F_OK) == 0 && remove(replicate::SLAVE_TMP) != 0)
         {
             KV_ERROR("tmp file remove error");
             goto clean;
@@ -479,14 +479,13 @@ namespace hpc_coroutine
             goto clean;
         }
 
-        resp_slave_process(fd);
-
     clean:
         if (thr.joinable())
-            thr.detach();
+            thr.join();
         if (rdma_payload.data)
             allocator::kv_free(rdma_payload.data);
         close(fd);
+        KV_INFO("rdma resource clean");
         return;
     }
 
@@ -525,7 +524,7 @@ namespace hpc_coroutine
 
     int TcpSlaveServer::start_eventloop()
     {
-        hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(slave_run, _port, _port_rdma, _ip, _ip_rdma);
+        hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(slave_run, _master_port, _port_rdma, _master_ip, _ip_rdma);
         hpc_coroutine::CoroutineSched::get_coroutine_sched()->run();
         return 0;
     }

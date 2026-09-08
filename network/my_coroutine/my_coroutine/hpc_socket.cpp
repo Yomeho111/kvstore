@@ -183,6 +183,12 @@ int close(int fd)
     if (!close_f)
         init_hook();
 
+    if (hpc_coroutine::CoroutineSched::get_coroutine_sched()->epoll_clear(fd))
+    {
+        close_f(fd);
+        return -1;
+    }
+
     return close_f(fd);
 }
 
