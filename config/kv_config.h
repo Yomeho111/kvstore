@@ -24,6 +24,9 @@ namespace kv_config
         kv_persistent::PersistMode persist_mode{kv_persistent::PersistMode::NONE};
         Role role{Role::STANDALONE};
 
+        // The local ip for tcp connection
+        string ip;
+
         // Only meaningful when role is SLAVE: the master's RDMA endpoint.
         string master_ip;
         uint16_t master_port{8050};

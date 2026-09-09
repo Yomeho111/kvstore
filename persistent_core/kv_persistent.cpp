@@ -15,7 +15,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
-#include <charconv>
 
 #include "kv_header.h"
 #include "crc32.h"
@@ -33,88 +32,6 @@ namespace kv_persistent
 
     constexpr const char *RDB_FILE{"kv_0.rdt"};
     constexpr const char *RDB_TMP{"kv_0.rdt.tmp"};
-
-    static inline size_t decimal_digits(size_t n)
-    {
-        size_t digits = 1;
-
-        while (n >= 10)
-        {
-            n /= 10;
-            ++digits;
-        }
-
-        return digits;
-    }
-
-    static inline char *write_size_t(char *p, size_t value)
-    {
-        auto [ptr, ec] = std::to_chars(p, p + 32, value);
-        return ptr;
-    }
-
-    size_t get_resp_size(const size_t command_len, size_t key_len, size_t value_len)
-    {
-        // "*3\r\n"
-        size_t total_size = 14 + command_len + key_len + decimal_digits(command_len) + decimal_digits(key_len);
-
-        if (value_len > 0)
-            total_size += decimal_digits(value_len) + 5 + value_len;
-
-        return total_size;
-    }
-
-    int format_resp(
-        const char *command,
-        const size_t command_size,
-        const string &key,
-        const string &value,
-        char *p)
-    {
-        /*
-         * RESP:
-         *
-         * *3\r\n
-         * $<command_len>\r\n
-         * command\r\n
-         * $<key_len>\r\n
-         * key\r\n
-         * $<value_len>\r\n
-         * value\r\n
-         */
-
-        if (command_size == 0 || key.size() == 0)
-            return -1;
-
-        if (value.size() == 0)
-            memcpy(p, "*2\r\n", 4);
-        else
-            memcpy(p, "*3\r\n", 4);
-        p += 4;
-
-        auto write_bulk_string = [&p](const string &str)
-        {
-            *p++ = '$';
-
-            p = write_size_t(p, str.size());
-
-            *p++ = '\r';
-            *p++ = '\n';
-
-            memcpy(p, str.data(), str.size());
-            p += str.size();
-
-            *p++ = '\r';
-            *p++ = '\n';
-        };
-
-        write_bulk_string(command);
-        write_bulk_string(key);
-        if (!value.empty())
-            write_bulk_string(value);
-
-        return 0;
-    }
 
     static bool parse_store_file_index(const fs::path &file_path, int *file_idx)
     {
@@ -396,7 +313,7 @@ namespace kv_persistent
         cur += sizeof(resp_size);
 
         // format resp
-        format_resp(command_data.data, command_data.size, key, value, cur);
+        format_resp(cur, std::string_view{command_data.data, command_data.size}, key, value);
 
         // compute the crc32 over the payload and store it right after the magic
         crc = checksum::crc32(payload, buffer_data.size - sizeof(MAGIC) - sizeof(crc));

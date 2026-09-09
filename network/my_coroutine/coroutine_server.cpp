@@ -20,13 +20,13 @@ namespace hpc_coroutine
 
     static void server(int fd, ProcessFunc process_func);
     static void resp_server_process(int fd);
-    static int init_server(uint16_t port);
+    static int init_server(uint16_t port, const char *ip);
 
     int TcpServers::init()
     {
         for (int i = 0; i < PORT_NUM; i++)
         {
-            int sockfd = init_server(_port + i);
+            int sockfd = init_server(_port + i, _ip);
             if (sockfd == -1)
             {
                 KV_ERROR("init_server");
@@ -48,7 +48,7 @@ namespace hpc_coroutine
         return 0;
     }
 
-    static int init_server(uint16_t port)
+    static int init_server(uint16_t port, const char *ip)
     {
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0)
@@ -60,7 +60,18 @@ namespace hpc_coroutine
         struct sockaddr_in local, remote;
         local.sin_family = AF_INET;
         local.sin_port = htons(port);
-        local.sin_addr.s_addr = INADDR_ANY;
+        if (ip == nullptr)
+            local.sin_addr.s_addr = INADDR_ANY;
+        else
+        {
+            if (inet_pton(AF_INET, ip, &local.sin_addr) <= 0)
+            {
+                KV_ERROR("inet_pton");
+                close(fd);
+                return -1;
+            }
+        }
+
         if (bind(fd, (struct sockaddr *)&local, sizeof(struct sockaddr_in)) == -1)
         {
             KV_ERROR("error bind");
@@ -395,7 +406,7 @@ namespace hpc_coroutine
         }
     }
 
-    static void slave_process(int fd, uint16_t port_rdma, const char *ip_rdma)
+    static void slave_process(int fd, uint16_t port_rdma, const char *ip_rdma, uint16_t my_port, const char *my_ip)
     {
         if (!ip_rdma || fd < 0)
             return;
@@ -423,14 +434,22 @@ namespace hpc_coroutine
         char port_str[32]{0};
         snprintf(port_str, sizeof(port_str), "%u", port_rdma);
 
+        char my_port_str[32]{0};
+        snprintf(my_port_str, sizeof(my_port_str), "%u", my_port);
+
         auto &prot = kv_protocal::KvStoreProtocal::instance();
-        auto rdma_payload = prot.make_command(command, strnlen(command, 32), ip_rdma, port_str);
-        KV_INFO("SYNC command: %s", rdma_payload.data);
+        auto rdma_payload = prot.make_command(
+            std::string_view{command, strnlen(command, 32)},
+            std::string_view{ip_rdma},
+            std::string_view{port_str},
+            std::string_view{my_ip},
+            std::string_view{my_port_str});
         if (rdma_payload.data == nullptr || rdma_payload.size == 0)
         {
             KV_ERROR("SYNC command error");
             goto clean;
         }
+        KV_INFO("SYNC command: %.*s", static_cast<int>(rdma_payload.size), rdma_payload.data);
 
         if (send(fd, rdma_payload.data, rdma_payload.size, 0) < 0)
         {
@@ -496,7 +515,7 @@ namespace hpc_coroutine
     // Runs inside a coroutine: the hooked socket()/connect()/recv()/send()
     // yield to the scheduler, so they must NOT be called before the scheduler
     // is running (i.e. not from TcpSlaveServer::init()).
-    static void slave_run(uint16_t port, uint16_t port_rdma, const char *ip, const char *ip_rdma)
+    static void slave_run(uint16_t master_port, uint16_t port_rdma, uint16_t my_port, const char *master_ip, const char *ip_rdma, const char *my_ip)
     {
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0)
@@ -507,9 +526,9 @@ namespace hpc_coroutine
 
         struct sockaddr_in server_addr{};
         server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(port);
+        server_addr.sin_port = htons(master_port);
 
-        if (inet_pton(AF_INET, ip, &server_addr.sin_addr) <= 0)
+        if (inet_pton(AF_INET, master_ip, &server_addr.sin_addr) <= 0)
         {
             KV_ERROR("inet_pton");
             close(fd);
@@ -523,14 +542,14 @@ namespace hpc_coroutine
             return;
         }
 
-        slave_process(fd, port_rdma, ip_rdma);
+        slave_process(fd, port_rdma, ip_rdma, my_port, my_ip);
     }
 
     int TcpSlaveServer::init()
     {
         for (int i = 0; i < PORT_NUM; i++)
         {
-            int sockfd = init_server(_my_port + i);
+            int sockfd = init_server(_my_port + i, _my_ip);
             if (sockfd == -1)
             {
                 KV_ERROR("init_server");
@@ -542,12 +561,12 @@ namespace hpc_coroutine
 
     int TcpSlaveServer::start_eventloop()
     {
-        hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(slave_run, _master_port, _port_rdma, _master_ip, _ip_rdma);
+        hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(slave_run, _master_port, _port_rdma, _my_port, _master_ip, _ip_rdma, _my_ip);
         hpc_coroutine::CoroutineSched::get_coroutine_sched()->run();
         for (int i = 0; i < PORT_NUM; i++)
         {
             if (_fd_list[i] != -1)
-                hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server, _fd_list[i], resp_server_process);
+                hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server, _fd_list[i], resp_slave_process);
         }
         hpc_coroutine::CoroutineSched::get_coroutine_sched()->run();
         return 0;

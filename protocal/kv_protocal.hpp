@@ -33,8 +33,8 @@ namespace kv_protocal
 
     struct DataField
     {
-        char *data;
-        size_t size;
+        char *data{nullptr};
+        size_t size{0};
     };
 
     constexpr uint64_t cmd_tag(const char *s, size_t len)
@@ -450,9 +450,9 @@ namespace kv_protocal
                 }
                 case KV_SYNC:
                 {
-                    // SYNC <replica-ip> <replica-rdma-port>: snapshot the dataset and
+                    // SYNC <replica-rdma-ip> <replica-rdma-port> <slave-tcp ip> <slave-tcp-port>: snapshot the dataset and
                     // push it over RDMA. The replica must already be listening.
-                    if (argc < 3)
+                    if (argc < 5)
                     {
                         out += "-ERR wrong number of arguments for 'SYNC' command\r\n";
                         return 0;
@@ -465,6 +465,14 @@ namespace kv_protocal
                         out += "-ERR invalid replica address\r\n";
                         return 0;
                     }
+
+                    if (argv[3] == nullptr || argvlen[3] == 0 || strlen(argv[3]) != argvlen[3])
+                    {
+                        out += "-ERR invalid slave tcp address\r\n";
+                        return 0;
+                    }
+
+                    KV_INFO("The slave info:\nrdma: %s: %s\ntcp: %s: %s", argv[1], argv[2], argv[3], argv[4]);
 
                     long long port = 0;
                     if (!_resp_to_ll(argv[2], argvlen[2], port) || port <= 0 || port > 65535)
@@ -512,26 +520,33 @@ namespace kv_protocal
             return _engine.load_snapshot(file_path_str, to_disk);
         }
 
-        DataField make_command(const char *command, size_t command_size, const string &key, const string &value)
+        template <typename... Args>
+        DataField make_command(const Args &...vars)
         {
-            if (command_size == 0)
-                return {nullptr, 0};
+            constexpr size_t argc = sizeof...(Args);
 
-            size_t buffer_size = kv_persistent::get_resp_size(command_size, key.size(), value.size());
-
-            char *buffer = (char *)allocator::kv_malloc(buffer_size);
-            if (!buffer)
+            if constexpr (argc == 0)
             {
-                return {nullptr, 0};
+                return {};
             }
-
-            if (kv_persistent::format_resp(command, command_size, key, value, buffer) < 0)
+            else
             {
-                allocator::kv_free(buffer);
-                return {nullptr, 0};
-            }
+                size_t buffer_size = kv_persistent::get_resp_size(vars.size()...);
 
-            return {buffer, buffer_size};
+                char *buffer = (char *)allocator::kv_malloc(buffer_size);
+                if (!buffer)
+                {
+                    return {};
+                }
+
+                if (kv_persistent::format_resp(buffer, vars...) < 0)
+                {
+                    allocator::kv_free(buffer);
+                    return {};
+                }
+
+                return {buffer, buffer_size};
+            }
         }
 
     private:

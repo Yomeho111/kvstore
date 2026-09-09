@@ -8,10 +8,11 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <charconv>
 #include <condition_variable>
 #include "engine_interface_base.h"
 #include "allocator.h"
-#include <lockfree_queue.hpp>
+#include "lockfree_queue.hpp"
 
 namespace kv_persistent
 {
@@ -35,14 +36,74 @@ namespace kv_persistent
 
     inline constexpr const size_t IOBUFFER_SIZE{1024 * 512};
 
-    size_t get_resp_size(const size_t command_len, size_t key_len, size_t value_len);
+    constexpr static inline size_t decimal_digits(size_t n)
+    {
+        size_t digits = 1;
 
-    int format_resp(
-        const char *command,
-        const size_t command_size,
-        const string &key,
-        const string &value,
-        char *p);
+        while (n >= 10)
+        {
+            n /= 10;
+            ++digits;
+        }
+
+        return digits;
+    }
+
+    static inline char *write_size_t(char *p, size_t value)
+    {
+        auto [ptr, ec] = std::to_chars(p, p + 32, value);
+        return ptr;
+    }
+
+    template <typename... Args>
+    constexpr size_t get_resp_size(Args... lens)
+    {
+        constexpr size_t argc = sizeof...(Args);
+
+        size_t total_size = 3 + decimal_digits(argc);
+
+        total_size += ((static_cast<size_t>(lens) + decimal_digits(static_cast<size_t>(lens)) + 5) + ...);
+
+        return total_size;
+    }
+
+    template <typename... Args>
+    int format_resp(char *p, const Args &...vars)
+    {
+
+        constexpr size_t argc = sizeof...(Args);
+        if constexpr (argc == 0)
+            return 0;
+        else
+        {
+            *p++ = '*';
+
+            p = write_size_t(p, argc);
+
+            *p++ = '\r';
+            *p++ = '\n';
+
+            auto write_bulk_string = [&p](const auto &str)
+            {
+                *p++ = '$';
+
+                p = write_size_t(p, str.size());
+
+                *p++ = '\r';
+                *p++ = '\n';
+
+                memcpy(p, str.data(), str.size());
+                p += str.size();
+
+                *p++ = '\r';
+                *p++ = '\n';
+            };
+
+            (write_bulk_string(vars), ...);
+
+            return 0;
+        }
+    }
 
     struct DataField
     {

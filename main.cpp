@@ -118,7 +118,7 @@ int main(int argc, char *argv[])
     if (is_slave)
     {
         // slave server
-        hpc_coroutine::TcpSlaveServer slave_server(cfg.master_port, cfg.slave_rdma_port, cfg.port, cfg.master_ip.c_str(), cfg.slave_rdma_ip.c_str());
+        hpc_coroutine::TcpSlaveServer slave_server(cfg.master_port, cfg.slave_rdma_port, cfg.port, cfg.ip.c_str(), cfg.master_ip.c_str(), cfg.slave_rdma_ip.c_str());
         slave_server.init();
         slave_server.start_eventloop();
     }
@@ -137,7 +137,7 @@ int main(int argc, char *argv[])
         //         servers.init();
         //         servers.start_eventloop();
         // #endif
-        hpc_coroutine::TcpServers servers(cfg.port);
+        hpc_coroutine::TcpServers servers(nullptr, cfg.port);
         servers.init();
         servers.start_eventloop();
     }

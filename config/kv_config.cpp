@@ -166,7 +166,9 @@ namespace kv_config
             std::string value = lower(raw);
             bool bad_value = false;
 
-            if (section == "server" && key == "port")
+            if (section == "server" && key == "ip")
+                parsed.ip.assign(raw.data(), raw.size());
+            else if (section == "server" && key == "port")
                 bad_value = !parse_port(value, parsed.port);
             else if (section == "server" && key == "log_level")
             {
