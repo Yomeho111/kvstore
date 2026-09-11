@@ -3,16 +3,12 @@
 
 #include <atomic>
 #include <type_traits>
-#include <slab.hpp>
+#include "slab.hpp"
 
 namespace base_component
 {
 
     template <typename T>
-    concept MpscQueueValue = std::is_integral_v<T> &&
-                             std::is_same_v<T, std::remove_cv_t<T>>;
-
-    template <MpscQueueValue T>
     class MpscQueue
     {
 
@@ -37,7 +33,7 @@ namespace base_component
         // wait free
         void enqueue(T data)
         {
-            Node *node = new (KV_NODE_ALLOC(Node)) Node(data);
+            Node *node = new (KV_NODE_ALLOC(Node)) Node(std::move(data));
             Node *prevHead = head_.exchange(node, std::memory_order_acq_rel);
             prevHead->next.store(node, std::memory_order_release);
         }
@@ -50,7 +46,7 @@ namespace base_component
             if (!next)
                 return false;
 
-            result = next->data;
+            result = std::move(next->data);
             tail_.store(next, std::memory_order_release);
             tail->~Node();
             KV_NODE_FREE(Node, tail);
@@ -61,7 +57,7 @@ namespace base_component
         struct Node
         {
             Node() = default;
-            explicit Node(const T &d) : data(d)
+            explicit Node(T &&d) : data(std::move(d))
             {
                 next.store(nullptr, std::memory_order_relaxed);
             }
@@ -77,6 +73,9 @@ namespace base_component
 
         MpscQueue(const MpscQueue &) = delete;
         MpscQueue &operator=(const MpscQueue &) = delete;
+
+        MpscQueue(MpscQueue &&) = delete;
+        MpscQueue &operator=(MpscQueue &&) = delete;
     };
 
 } // namespace base_component
