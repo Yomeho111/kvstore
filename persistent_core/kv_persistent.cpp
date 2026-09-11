@@ -562,8 +562,14 @@ namespace kv_persistent
             switch (command_from_str(fields[0].data, fields[0].size))
             {
                 case kv_protocal::KVS_SET:
+                {
                     ret = engine->set(key, key_len, value, val_len, nullptr, false);
+                    if (ret > 0)
+                    {
+                        ret = engine->modify(key, key_len, value, val_len, nullptr, false);
+                    }
                     break;
+                }
                 case kv_protocal::KVS_DEL:
                     ret = engine->del(key, key_len, false);
                     break;
@@ -978,6 +984,10 @@ namespace kv_persistent
             int ret = 0;
 
             ret = engine->set(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, to_disk);
+            if (ret > 0)
+            {
+                ret = engine->modify(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, to_disk);
+            }
 
             if (ret != 0)
             {

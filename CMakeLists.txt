@@ -29,6 +29,7 @@ option(ENABLE_MEMORY_POOL "Enable custom memory pool allocator" OFF)
 option(ENABLE_TCMALLOC "Link with tcmalloc" OFF)
 option(ENABLE_JEMALLOC "Link with jemalloc" OFF)
 option(ENABLE_CPP_EXCEPTIONS "Enable C++ exceptions" OFF)
+option(BUILD_EBPF_TRANSFER "Build the standalone eBPF delta transfer daemon" OFF)
 
 string(TOUPPER "${NETWORK}" NETWORK)
 string(TOUPPER "${ENGINE}" ENGINE)
@@ -223,3 +224,8 @@ add_executable(kvstore_client_testcase
     kvstore_client/testcase.cpp
 )
 target_link_libraries(kvstore_client_testcase PRIVATE kvstore_core)
+
+# Separate executable, it traces a running kvstore instead of linking against it.
+if(BUILD_EBPF_TRANSFER)
+    add_subdirectory(ebpf)
+endif()

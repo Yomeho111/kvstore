@@ -561,13 +561,12 @@ namespace hpc_coroutine
 
     int TcpSlaveServer::start_eventloop()
     {
-        hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(slave_run, _master_port, _port_rdma, _my_port, _master_ip, _ip_rdma, _my_ip);
-        hpc_coroutine::CoroutineSched::get_coroutine_sched()->run();
         for (int i = 0; i < PORT_NUM; i++)
         {
             if (_fd_list[i] != -1)
                 hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(server, _fd_list[i], resp_slave_process);
         }
+        hpc_coroutine::CoroutineSched::get_coroutine_sched()->create_coroutine(slave_run, _master_port, _port_rdma, _my_port, _master_ip, _ip_rdma, _my_ip);
         hpc_coroutine::CoroutineSched::get_coroutine_sched()->run();
         return 0;
     }
