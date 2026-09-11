@@ -23,6 +23,7 @@
 #include "kv_persistent.h"
 #include "replicate.h"
 #include "kv_log.h"
+#include "thread_pool.hpp"
 
 // #define MAX_BODY_SIZE 4096
 #define MAX_TOKEN_SIZE 2
@@ -114,16 +115,6 @@ namespace kv_protocal
             }
             return prot;
         }
-
-        // int save(bool for_temp = false)
-        // {
-        //     return _engine.save(for_temp);
-        // }
-
-        // void remove_tmp_file()
-        // {
-        //     _engine.remove_temp_file();
-        // }
 
         int process_num_request(struct network::StatusM *status, uint32_t num_request)
         {
@@ -441,8 +432,21 @@ namespace kv_protocal
                 {
                     if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::RDB)
                     {
-                        _engine.save();
-                        out += "+OK\r\n";
+                        string tmp_file_path{kv_persistent::RDB_TMP};
+                        tmp_file_path += "_";
+
+                        auto counter = std::to_string(_tmp_file_counter++);
+                        tmp_file_path.append(counter.data(), counter.size());
+
+                        auto &thread_pool = base_component::ThreadPool::instance();
+
+                        int ret = thread_pool.submit(
+                            [this, tmp_file_path = std::move(tmp_file_path)]
+                            {
+                                int ret = _engine.save(tmp_file_path);
+                                (void)ret;
+                            });
+                        out += ret == 0 ? "+OK\r\n" : "-ERR submit save task failed\r\n";
                         return 0;
                     }
                     out += "-ERR Current persistent mode is not rdb\r\n";
@@ -450,6 +454,12 @@ namespace kv_protocal
                 }
                 case KV_SYNC:
                 {
+                    if (!replicate::g_is_master)
+                    {
+                        out += "-ERR This is not a master server\r\n";
+                        return 0;
+                    }
+
                     // SYNC <replica-rdma-ip> <replica-rdma-port> <slave-tcp ip> <slave-tcp-port>: snapshot the dataset and
                     // push it over RDMA. The replica must already be listening.
                     if (argc < 5)
@@ -481,23 +491,34 @@ namespace kv_protocal
                         return 0;
                     }
 
-                    KV_INFO("Get SYNC command, sync data to %s: %llu", argv[1], port);
-                    switch (_send_replicate(argv[1], static_cast<uint16_t>(port)))
-                    {
-                        case 0:
-                            out += "+OK\r\n";
-                            break;
-                        case -1:
-                            out += "-ERR snapshot failed\r\n";
-                            break;
-                        case -2:
-                            out += "-ERR cannot reach replica over RDMA\r\n";
-                            break;
-                        default:
-                            out += "-ERR snapshot transfer failed\r\n";
-                            break;
-                    }
-                    KV_INFO("SYNC command finished to %s: %llu", argv[1], port);
+                    string tmp_file_path{kv_persistent::RDB_TMP};
+                    tmp_file_path += "_";
+
+                    auto counter = std::to_string(_tmp_file_counter++);
+                    tmp_file_path.append(counter.data(), counter.size());
+
+                    string replica_ip{argv[1], argvlen[1]};
+                    uint16_t replica_port = static_cast<uint16_t>(port);
+
+                    auto &thread_pool = base_component::ThreadPool::instance();
+
+                    int ret = thread_pool.submit(
+                        [this,
+                         replica_ip = std::move(replica_ip),
+                         replica_port,
+                         tmp_file_path = std::move(tmp_file_path)]
+                        {
+                            int result = _send_replicate(
+                                replica_ip,
+                                replica_port,
+                                tmp_file_path);
+
+                            (void)result;
+                        });
+
+                    out += ret == 0
+                               ? "+OK\r\n"
+                               : "-ERR submit sync task failed\r\n";
                     return 0;
                 }
                 case KV_SYNCFIN:
@@ -616,21 +637,21 @@ namespace kv_protocal
         /**
          * @brief the key function to save all data into temp file and send to slave server
          */
-        int _send_replicate(const char *ip, uint16_t port)
+        int _send_replicate(const string &ip, uint16_t port, const string &tmp_file_path)
         {
             // save all data into tmp file
-            if (_engine.save(true) < 0)
+            if (_engine.save(tmp_file_path, true) < 0)
             {
                 return -1;
             }
 
             // launch rdma server and send the tmp file
-            replicate::MasterServer master(ip, port);
+            replicate::MasterServer master(ip.c_str(), port);
             if (master.init() < 0)
                 return -2;
 
             KV_INFO("Master rdma init succeed");
-            int ret = master.send(kv_persistent::RDB_TMP_PATH);
+            int ret = master.send((string{kv_persistent::RDB_FOLDER} + tmp_file_path).c_str());
             if (ret == 1)
                 KV_INFO("Master has no data");
             else if (ret < 0)
@@ -638,7 +659,7 @@ namespace kv_protocal
 
             KV_INFO("Master rdma send succeed");
             // close rdma and remove tmp file
-            _engine.remove_temp_file();
+            _engine.remove_temp_file(tmp_file_path);
             KV_INFO("remove temp file");
             return 0;
         }
@@ -767,6 +788,7 @@ namespace kv_protocal
         KvProtocal &operator=(KvProtocal &&) = delete;
 
         KvEngine _engine;
+        size_t _tmp_file_counter{0};
     };
 
 #ifdef RBTREE_ENGINE

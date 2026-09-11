@@ -182,10 +182,10 @@ namespace kv_engine
 
         // Fork a child that writes a point-in-time RDB snapshot of the whole dataset.
         // The parent only holds the lock across fork() and then keeps serving.
-        int save(bool for_temp = false)
+        int save(const string &tmp_file_path, bool for_temp = false)
         {
             auto &snapshot_engine = kv_persistent::SnapshotEngine::instance();
-            if (snapshot_engine.prepare() < 0)
+            if (snapshot_engine.prepare(tmp_file_path) < 0)
                 return -1;
 
             lock_.lock();
@@ -213,7 +213,7 @@ namespace kv_engine
             if (pid < 0)
             {
                 lock_.unlock();
-                snapshot_engine.discard();
+                snapshot_engine.discard(tmp_file_path);
                 return -1;
             }
 
@@ -226,18 +226,18 @@ namespace kv_engine
 
             if (!(WIFEXITED(status) && WEXITSTATUS(status) == 0))
             {
-                snapshot_engine.discard();
+                snapshot_engine.discard(tmp_file_path);
                 return -1;
             }
 
             if (for_temp)
                 return 0;
-            return snapshot_engine.commit();
+            return snapshot_engine.commit(tmp_file_path);
         }
 
-        void remove_temp_file()
+        void remove_temp_file(const string &tmp_file_name)
         {
-            kv_persistent::SnapshotEngine::instance().discard();
+            kv_persistent::SnapshotEngine::instance().discard(tmp_file_name);
             std::error_code ec;
             const fs::path path{kv_persistent::RDB_FOLDER};
 

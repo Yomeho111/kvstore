@@ -30,6 +30,8 @@ namespace replicate
 
     inline constexpr const char *SLAVE_TMP{".tmp"};
 
+    inline bool g_is_master{false};
+
     // This is the server for master
     class MasterServer
     {

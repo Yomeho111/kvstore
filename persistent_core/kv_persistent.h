@@ -18,6 +18,8 @@ namespace kv_persistent
 {
     namespace fs = std::filesystem;
 
+    inline constexpr const char *RDB_TMP{"kv_0.rdt.tmp"};
+
     // Which persistence strategy the server uses. Selected once at startup.
     enum class PersistMode
     {
@@ -31,8 +33,7 @@ namespace kv_persistent
 
     inline constexpr const char *RDB_DEFAULT_PATH{"rdb_data/kv_0.rdt"};
 
-    inline constexpr const char *RDB_TMP_PATH{"rdb_data/kv_0.rdt.tmp"};
-    inline constexpr const char *RDB_FOLDER{"rdb_data"};
+    inline constexpr const char *RDB_FOLDER{"rdb_data/"};
 
     inline constexpr const size_t IOBUFFER_SIZE{1024 * 512};
 
@@ -224,9 +225,9 @@ namespace kv_persistent
         static SnapshotEngine &instance();
 
         // parent side (around fork)
-        int prepare();  // create folder + open the temp snapshot file
-        int commit();   // atomically rename temp -> final, close
-        void discard(); // drop the temp file, close
+        int prepare(const string &tmp_file_path);  // create folder + open the temp snapshot file
+        int commit(const string &tmp_file_path);   // atomically rename temp -> final, close
+        void discard(const string &tmp_file_path); // drop the temp file, close
 
         // child side (after fork)
         int child_begin();                                       // init io_uring on the inherited fd

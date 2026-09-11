@@ -10,6 +10,8 @@
 #include "kv_protocal.hpp"
 #include "kv_config.h"
 #include "kv_log.h"
+#include "replicate.h"
+#include "thread_pool.hpp"
 
 #include <signal.h>
 #include <stdlib.h>
@@ -105,6 +107,17 @@ int main(int argc, char *argv[])
     kv_persistent::g_persist_mode = cfg.persist_mode;
 
     is_slave = cfg.role == kv_config::Role::SLAVE;
+
+    if (cfg.role == kv_config::Role::MASTER)
+    {
+        replicate::g_is_master = true;
+    }
+
+    if (cfg.role == kv_config::Role::MASTER || cfg.persist_mode == kv_persistent::PersistMode::RDB)
+    {
+        auto &thread_pool = base_component::ThreadPool::instance(THREAD_POOL_NUM);
+        (void)thread_pool;
+    }
 
     KV_INFO("kvstore starting: config=%s port=%u role=%s persistence=%s log_level=%s",
             config_path,

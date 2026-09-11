@@ -31,7 +31,6 @@ namespace kv_persistent
     constexpr unsigned KVS_URING_DEPTH{8};
 
     constexpr const char *RDB_FILE{"kv_0.rdt"};
-    constexpr const char *RDB_TMP{"kv_0.rdt.tmp"};
 
     static bool parse_store_file_index(const fs::path &file_path, int *file_idx)
     {
@@ -697,7 +696,7 @@ namespace kv_persistent
             ::close(fd_);
     }
 
-    int SnapshotEngine::prepare()
+    int SnapshotEngine::prepare(const string &tmp_file_path)
     {
         std::error_code ec;
         fs::path folder{RDB_FOLDER};
@@ -715,7 +714,7 @@ namespace kv_persistent
         if (!fs::is_directory(folder, ec) || ec)
             return -3;
 
-        fs::path tmp_path = folder / RDB_TMP;
+        fs::path tmp_path = folder / tmp_file_path;
         int fd = ::open(tmp_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd < 0)
             return -5;
@@ -842,7 +841,7 @@ namespace kv_persistent
         return 0;
     }
 
-    int SnapshotEngine::commit()
+    int SnapshotEngine::commit(const string &tmp_file_path)
     {
         if (fd_ >= 0)
         {
@@ -852,13 +851,13 @@ namespace kv_persistent
 
         std::error_code ec;
         fs::path folder{RDB_FOLDER};
-        fs::rename(folder / RDB_TMP, folder / RDB_FILE, ec);
+        fs::rename(folder / tmp_file_path, folder / RDB_FILE, ec);
         if (ec)
             return -1;
         return 0;
     }
 
-    void SnapshotEngine::discard()
+    void SnapshotEngine::discard(const string &tmp_file_path)
     {
         if (fd_ >= 0)
         {
@@ -867,7 +866,7 @@ namespace kv_persistent
         }
 
         std::error_code ec;
-        fs::remove(fs::path{RDB_FOLDER} / RDB_TMP, ec);
+        fs::remove(fs::path{RDB_FOLDER} / tmp_file_path, ec);
     }
 
     int SnapshotEngine::load(kv_engine::EngineInterfaceBase *engine, const string &file_path_str, bool to_disk)

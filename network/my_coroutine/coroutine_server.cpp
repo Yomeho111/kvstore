@@ -466,8 +466,7 @@ namespace hpc_coroutine
             goto clean;
         }
 
-        KV_INFO("SYNC response get: %s", buf);
-
+        KV_INFO("SYNC response get: %.*s", n, buf);
         if (strcmp(buf, "+OK\r\n"))
         {
             KV_ERROR("SYNC failed signal from master");
@@ -504,7 +503,7 @@ namespace hpc_coroutine
 
     clean:
         if (thr.joinable())
-            thr.join();
+            thr.detach();
         if (rdma_payload.data)
             allocator::kv_free(rdma_payload.data);
         close(fd);
