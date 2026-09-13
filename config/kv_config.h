@@ -6,6 +6,7 @@
 
 #include "kv_log.h"
 #include "kv_persistent.h"
+#include "allocator.h"
 
 namespace kv_config
 {
@@ -23,9 +24,15 @@ namespace kv_config
         kv_persistent::PersistMode persist_mode{kv_persistent::PersistMode::NONE};
         Role role{Role::STANDALONE};
 
+        // The local ip for tcp connection
+        string ip;
+
         // Only meaningful when role is SLAVE: the master's RDMA endpoint.
-        std::string master_ip;
-        uint16_t master_port{20000};
+        string master_ip;
+        uint16_t master_port{8050};
+
+        string slave_rdma_ip;
+        uint16_t slave_rdma_port{20000};
     };
 
     // Returns 0 on success. A missing file, an unknown section/key, or a bad

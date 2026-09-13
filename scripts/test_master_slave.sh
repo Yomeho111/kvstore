@@ -484,7 +484,7 @@ write_config "$MASTER_RUNTIME/kvstore.ini" master
 MASTER_PID=$!
 wait_for_tcp "$CLIENT_IP" "$CLIENT_PORT" "$MASTER_PID" "master" "$MASTER_RUNTIME/master.log"
 
-run_client_mode "$MASTER_BUILD/kvstore_client_testcase" 14 \
+run_client_mode "$MASTER_BUILD/kvstore_client_testcase" 10 \
     "Writing unique keys 1-50000 to the master"
 FIRST_PHASE_BYTES=$(aof_bytes "$MASTER_RUNTIME/data")
 ((FIRST_PHASE_BYTES > 0)) || die "master AOF is empty after the first write phase"
@@ -501,7 +501,7 @@ SLAVE_PID=$!
 # second write phase, so the master keeps taking writes while the replica is
 # still catching up. That is what exercises the delta path (and its
 # ring-overflow fallback) rather than a quiet full sync.
-run_client_mode "$MASTER_BUILD/kvstore_client_testcase" 15 \
+run_client_mode "$MASTER_BUILD/kvstore_client_testcase" 11 \
     "Writing unique keys 50001-100000 while the replica performs its initial sync"
 SECOND_PHASE_BYTES=$(aof_bytes "$MASTER_RUNTIME/data")
 ((SECOND_PHASE_BYTES > FIRST_PHASE_BYTES)) || die "master AOF did not grow during the second write phase"

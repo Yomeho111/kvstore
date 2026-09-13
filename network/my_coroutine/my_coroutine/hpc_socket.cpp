@@ -174,8 +174,6 @@ int accept(int fd, struct sockaddr *addr, socklen_t *len)
         close(sockfd);
         return -1;
     }
-    int reuse = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char *)&reuse, sizeof(reuse));
 
     return sockfd;
 }
@@ -184,6 +182,12 @@ int close(int fd)
 {
     if (!close_f)
         init_hook();
+
+    if (hpc_coroutine::CoroutineSched::get_coroutine_sched()->epoll_clear(fd))
+    {
+        close_f(fd);
+        return -1;
+    }
 
     return close_f(fd);
 }

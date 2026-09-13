@@ -20,7 +20,10 @@
 #include "skiplist_engine/skiplist_engine.h"
 #include "allocator.h"
 #include "kv_header.h"
+#include "kv_persistent.h"
 #include "replicate.h"
+#include "kv_log.h"
+#include "thread_pool.hpp"
 
 // #define MAX_BODY_SIZE 4096
 #define MAX_TOKEN_SIZE 2
@@ -29,12 +32,78 @@
 namespace kv_protocal
 {
 
+    struct DataField
+    {
+        char *data{nullptr};
+        size_t size{0};
+    };
+
+    constexpr uint64_t cmd_tag(const char *s, size_t len)
+    {
+        if (len == 0 || len > 8)
+            return 0;
+        uint64_t tag = 0;
+        for (size_t i = 0; i < len; i++)
+            tag |= static_cast<uint64_t>(static_cast<unsigned char>(s[i]) & 0xDF) << (i * 8);
+        return tag;
+    }
+
+    template <size_t N>
+    constexpr uint64_t cmd_tag(const char (&s)[N])
+    {
+        return cmd_tag(s, N - 1);
+    }
+
+    inline constexpr const uint64_t KV_PING = cmd_tag("PING");
+    inline constexpr const uint64_t KV_SET = cmd_tag("SET");
+    inline constexpr const uint64_t KV_SETEX = cmd_tag("SETEX");
+    inline constexpr const uint64_t KV_PSETEX = cmd_tag("PSETEX");
+    inline constexpr const uint64_t KV_EXPIRE = cmd_tag("EXPIRE");
+    inline constexpr const uint64_t KV_PEXPIRE = cmd_tag("PEXPIRE");
+    inline constexpr const uint64_t KV_GET = cmd_tag("GET");
+    inline constexpr const uint64_t KV_DEL = cmd_tag("DEL");
+    inline constexpr const uint64_t KV_EXISTS = cmd_tag("EXISTS");
+    inline constexpr const uint64_t KV_QUIT = cmd_tag("QUIT");
+    inline constexpr const uint64_t KV_SELECT = cmd_tag("SELECT");
+    inline constexpr const uint64_t KV_CLIENT = cmd_tag("CLIENT");
+    inline constexpr const uint64_t KV_COMMAND = cmd_tag("COMMAND");
+    inline constexpr const uint64_t KV_CONFIG = cmd_tag("CONFIG");
+    inline constexpr const uint64_t KV_SAVE = cmd_tag("SAVE");
+    inline constexpr const uint64_t KV_SYNC = cmd_tag("SYNC");
+    inline constexpr const uint64_t KV_SYNCFIN = cmd_tag("SYNCFIN");
+
+    inline constexpr const char *SYNCFIN_RESP = "*1\r\n$7\r\nSYNCFIN\r\n";
+
+    // Where a command's reply goes. A replica applies commands without
+    // answering, so it passes a default-constructed (discarding) sink and the
+    // reply is never assembled.
+    class RespSink
+    {
+    public:
+        RespSink() = default;
+        RespSink(string &out) : _out(&out) {}
+
+        RespSink &operator+=(const char *s)
+        {
+            if (_out)
+                *_out += s;
+            return *this;
+        }
+
+        void append(const char *data, size_t len)
+        {
+            if (_out)
+                _out->append(data, len);
+        }
+
+    private:
+        string *_out{nullptr};
+    };
+
     template <typename KvEngine>
     class KvProtocal
     {
     public:
-        friend class replicate::FullSyncObject;
-
         static KvProtocal &instance()
         {
             static KvProtocal prot;
@@ -45,12 +114,6 @@ namespace kv_protocal
                 exit(0);
             }
             return prot;
-        }
-
-        // Trigger an RDB snapshot of the whole dataset (used by the SIGUSR1 handler).
-        int save()
-        {
-            return _engine.save();
         }
 
         int process_num_request(struct network::StatusM *status, uint32_t num_request)
@@ -159,7 +222,7 @@ namespace kv_protocal
         // hiredis reader in the reactor). The RESP-encoded reply is appended to
         // `out`. Returns 0 normally, or 1 if the connection should be closed
         // after the reply is sent (QUIT).
-        int process_resp_command(int argc, char **argv, size_t *argvlen, std::string &out)
+        int process_resp_command(int argc, char **argv, size_t *argvlen, const uint64_t cmd, RespSink out)
         {
             if (argc <= 0 || argv == nullptr || argvlen == nullptr || argv[0] == nullptr)
             {
@@ -167,280 +230,304 @@ namespace kv_protocal
                 return 0;
             }
 
-            // Redis command names are case-insensitive.
-            char cmd[16] = {0};
-            size_t cmd_len = argvlen[0] < sizeof(cmd) - 1 ? argvlen[0] : sizeof(cmd) - 1;
-            for (size_t i = 0; i < cmd_len; i++)
-                cmd[i] = static_cast<char>(::toupper(static_cast<unsigned char>(argv[0][i])));
-
-            if (strcmp(cmd, "PING") == 0)
+            switch (cmd)
             {
-                if (argc >= 2)
-                    _resp_append_bulk(out, argv[1], argvlen[1]);
-                else
-                    out += "+PONG\r\n";
-                return 0;
-            }
-            else if (strcmp(cmd, "SET") == 0)
-            {
-                if (argc < 3)
+                case KV_PING:
                 {
-                    out += "-ERR wrong number of arguments for 'set' command\r\n";
+                    if (argc >= 2)
+                        _resp_append_bulk(out, argv[1], argvlen[1]);
+                    else
+                        out += "+PONG\r\n";
                     return 0;
                 }
-                // Optional expiry: SET key value [EX seconds | PX milliseconds].
-                TimeoutSpec ts;
-                bool has_expiry = false;
-                for (int i = 3; i < argc;)
+                case KV_SET:
                 {
-                    char opt[8] = {0};
-                    size_t ol = argvlen[i] < sizeof(opt) - 1 ? argvlen[i] : sizeof(opt) - 1;
-                    for (size_t j = 0; j < ol; j++)
-                        opt[j] = static_cast<char>(::toupper(static_cast<unsigned char>(argv[i][j])));
-                    bool is_ex = strcmp(opt, "EX") == 0;
-                    bool is_px = strcmp(opt, "PX") == 0;
-                    if ((is_ex || is_px) && i + 1 < argc)
+                    if (argc < 3)
                     {
-                        long long amt;
-                        if (!_resp_to_ll(argv[i + 1], argvlen[i + 1], amt) || amt <= 0)
-                        {
-                            out += "-ERR invalid expire time in 'set' command\r\n";
-                            return 0;
-                        }
-                        if (is_ex)
-                            _fill_timeout_sec(ts, amt);
-                        else
-                            _fill_timeout_ms(ts, amt);
-                        has_expiry = true;
-                        i += 2;
-                    }
-                    else
-                    {
-                        out += "-ERR syntax error\r\n";
+                        out += "-ERR wrong number of arguments for 'set' command\r\n";
                         return 0;
                     }
-                }
-                // Redis SET overwrites an existing key. The engine's set()
-                // refuses to replace one (returns > 0), so fall back to modify().
-                TimeoutSpec *tp = has_expiry ? &ts : nullptr;
-                int ret = _engine.set(argv[1], argvlen[1], argv[2], argvlen[2], tp);
-                if (ret > 0)
-                    ret = _engine.modify(argv[1], argvlen[1], argv[2], argvlen[2], tp);
-                if (ret == 0)
-                    out += "+OK\r\n";
-                else
-                    out += "-ERR set failed\r\n";
-                return 0;
-            }
-            else if (strcmp(cmd, "SETEX") == 0 || strcmp(cmd, "PSETEX") == 0)
-            {
-                // SETEX key seconds value / PSETEX key milliseconds value
-                if (argc < 4)
-                {
-                    out += "-ERR wrong number of arguments for 'setex' command\r\n";
+                    // Optional expiry: SET key value [EX seconds | PX milliseconds].
+                    TimeoutSpec ts;
+                    bool has_expiry = false;
+                    for (int i = 3; i < argc;)
+                    {
+                        char opt[8] = {0};
+                        size_t ol = argvlen[i] < sizeof(opt) - 1 ? argvlen[i] : sizeof(opt) - 1;
+                        for (size_t j = 0; j < ol; j++)
+                            opt[j] = static_cast<char>(::toupper(static_cast<unsigned char>(argv[i][j])));
+                        bool is_ex = strcmp(opt, "EX") == 0;
+                        bool is_px = strcmp(opt, "PX") == 0;
+                        if ((is_ex || is_px) && i + 1 < argc)
+                        {
+                            long long amt;
+                            if (!_resp_to_ll(argv[i + 1], argvlen[i + 1], amt) || amt <= 0)
+                            {
+                                out += "-ERR invalid expire time in 'set' command\r\n";
+                                return 0;
+                            }
+                            if (is_ex)
+                                _fill_timeout_sec(ts, amt);
+                            else
+                                _fill_timeout_ms(ts, amt);
+                            has_expiry = true;
+                            i += 2;
+                        }
+                        else
+                        {
+                            out += "-ERR syntax error\r\n";
+                            return 0;
+                        }
+                    }
+                    // Redis SET overwrites an existing key. The engine's set()
+                    // refuses to replace one (returns > 0), so fall back to modify().
+                    TimeoutSpec *tp = has_expiry ? &ts : nullptr;
+                    int ret = _engine.set(argv[1], argvlen[1], argv[2], argvlen[2], tp);
+                    if (ret > 0)
+                        ret = _engine.modify(argv[1], argvlen[1], argv[2], argvlen[2], tp);
+                    if (ret == 0)
+                        out += "+OK\r\n";
+                    else
+                        out += "-ERR set failed\r\n";
                     return 0;
                 }
-                long long amt;
-                if (!_resp_to_ll(argv[2], argvlen[2], amt) || amt <= 0)
+                case KV_SETEX:
+                case KV_PSETEX:
                 {
-                    out += "-ERR invalid expire time in 'setex' command\r\n";
+                    // SETEX key seconds value / PSETEX key milliseconds value
+                    if (argc < 4)
+                    {
+                        out += "-ERR wrong number of arguments for 'setex' command\r\n";
+                        return 0;
+                    }
+                    long long amt;
+                    if (!_resp_to_ll(argv[2], argvlen[2], amt) || amt <= 0)
+                    {
+                        out += "-ERR invalid expire time in 'setex' command\r\n";
+                        return 0;
+                    }
+                    TimeoutSpec ts;
+                    if (cmd == KV_PSETEX)
+                        _fill_timeout_ms(ts, amt);
+                    else
+                        _fill_timeout_sec(ts, amt);
+                    int ret = _engine.set(argv[1], argvlen[1], argv[3], argvlen[3], &ts);
+                    if (ret > 0)
+                        ret = _engine.modify(argv[1], argvlen[1], argv[3], argvlen[3], &ts);
+                    if (ret == 0)
+                        out += "+OK\r\n";
+                    else
+                        out += "-ERR setex failed\r\n";
                     return 0;
                 }
-                TimeoutSpec ts;
-                if (cmd[0] == 'P')
-                    _fill_timeout_ms(ts, amt);
-                else
-                    _fill_timeout_sec(ts, amt);
-                int ret = _engine.set(argv[1], argvlen[1], argv[3], argvlen[3], &ts);
-                if (ret > 0)
-                    ret = _engine.modify(argv[1], argvlen[1], argv[3], argvlen[3], &ts);
-                if (ret == 0)
-                    out += "+OK\r\n";
-                else
-                    out += "-ERR setex failed\r\n";
-                return 0;
-            }
-            else if (strcmp(cmd, "EXPIRE") == 0 || strcmp(cmd, "PEXPIRE") == 0)
-            {
-                // EXPIRE key seconds / PEXPIRE key milliseconds
-                if (argc < 3)
+                case KV_EXPIRE:
+                case KV_PEXPIRE:
                 {
-                    out += "-ERR wrong number of arguments for 'expire' command\r\n";
-                    return 0;
-                }
-                long long amt;
-                if (!_resp_to_ll(argv[2], argvlen[2], amt))
-                {
-                    out += "-ERR value is not an integer or out of range\r\n";
-                    return 0;
-                }
-                // A non-positive expiry deletes the key immediately (Redis semantics).
-                if (amt <= 0)
-                {
-                    int d = _engine.del(argv[1], argvlen[1]);
-                    _resp_append_int(out, d == 0 ? 1 : 0);
-                    return 0;
-                }
-                // Re-apply the current value with a timeout to schedule expiry.
-                char *value = nullptr;
-                int r = _engine.get(argv[1], argvlen[1], &value);
-                if (r <= 0)
-                {
-                    _resp_append_int(out, 0); // key does not exist
-                    return 0;
-                }
-                TimeoutSpec ts;
-                if (cmd[0] == 'P')
-                    _fill_timeout_ms(ts, amt);
-                else
-                    _fill_timeout_sec(ts, amt);
-                int ret = _engine.modify(argv[1], argvlen[1], value, static_cast<size_t>(r) - 2, &ts);
-                allocator::kv_free(value);
-                _resp_append_int(out, ret == 0 ? 1 : 0);
-                return 0;
-            }
-            else if (strcmp(cmd, "GET") == 0)
-            {
-                if (argc < 2)
-                {
-                    out += "-ERR wrong number of arguments for 'get' command\r\n";
-                    return 0;
-                }
-                char *value = nullptr;
-                int ret = _engine.get(argv[1], argvlen[1], &value);
-                if (ret > 0)
-                {
-                    // get() returns the value followed by a trailing "\r\n" and a
-                    // length of value_size + 2; we reuse that "\r\n" as the RESP
-                    // bulk-string terminator.
-                    size_t vlen = static_cast<size_t>(ret) - 2;
-                    char hdr[32];
-                    int n = snprintf(hdr, sizeof(hdr), "$%zu\r\n", vlen);
-                    out.append(hdr, n);
-                    out.append(value, ret);
+                    // EXPIRE key seconds / PEXPIRE key milliseconds
+                    if (argc < 3)
+                    {
+                        out += "-ERR wrong number of arguments for 'expire' command\r\n";
+                        return 0;
+                    }
+                    long long amt;
+                    if (!_resp_to_ll(argv[2], argvlen[2], amt))
+                    {
+                        out += "-ERR value is not an integer or out of range\r\n";
+                        return 0;
+                    }
+                    // A non-positive expiry deletes the key immediately (Redis semantics).
+                    if (amt <= 0)
+                    {
+                        int d = _engine.del(argv[1], argvlen[1]);
+                        _resp_append_int(out, d == 0 ? 1 : 0);
+                        return 0;
+                    }
+                    // Re-apply the current value with a timeout to schedule expiry.
+                    char *value = nullptr;
+                    int r = _engine.get(argv[1], argvlen[1], &value);
+                    if (r <= 0)
+                    {
+                        _resp_append_int(out, 0); // key does not exist
+                        return 0;
+                    }
+                    TimeoutSpec ts;
+                    if (cmd == KV_PEXPIRE)
+                        _fill_timeout_ms(ts, amt);
+                    else
+                        _fill_timeout_sec(ts, amt);
+                    int ret = _engine.modify(argv[1], argvlen[1], value, static_cast<size_t>(r) - 2, &ts);
                     allocator::kv_free(value);
-                }
-                else if (ret == 0)
-                    out += "$-1\r\n"; // nil
-                else
-                    out += "-ERR get failed\r\n";
-                return 0;
-            }
-            else if (strcmp(cmd, "DEL") == 0)
-            {
-                if (argc < 2)
-                {
-                    out += "-ERR wrong number of arguments for 'del' command\r\n";
+                    _resp_append_int(out, ret == 0 ? 1 : 0);
                     return 0;
                 }
-                int deleted = 0;
-                for (int i = 1; i < argc; i++)
-                    if (_engine.del(argv[i], argvlen[i]) == 0)
-                        deleted++;
-                _resp_append_int(out, deleted);
-                return 0;
-            }
-            else if (strcmp(cmd, "EXISTS") == 0)
-            {
-                if (argc < 2)
+                case KV_GET:
                 {
-                    out += "-ERR wrong number of arguments for 'exists' command\r\n";
+                    if (argc < 2)
+                    {
+                        out += "-ERR wrong number of arguments for 'get' command\r\n";
+                        return 0;
+                    }
+                    char *value = nullptr;
+                    int ret = _engine.get(argv[1], argvlen[1], &value);
+                    if (ret > 0)
+                    {
+                        // get() returns the value followed by a trailing "\r\n" and a
+                        // length of value_size + 2; we reuse that "\r\n" as the RESP
+                        // bulk-string terminator.
+                        size_t vlen = static_cast<size_t>(ret) - 2;
+                        char hdr[32];
+                        int n = snprintf(hdr, sizeof(hdr), "$%zu\r\n", vlen);
+                        out.append(hdr, n);
+                        out.append(value, ret);
+                        allocator::kv_free(value);
+                    }
+                    else if (ret == 0)
+                        out += "$-1\r\n"; // nil
+                    else
+                        out += "-ERR get failed\r\n";
                     return 0;
                 }
-                int found = 0;
-                for (int i = 1; i < argc; i++)
-                    if (_engine.exist(argv[i], argvlen[i]) == 0)
-                        found++;
-                _resp_append_int(out, found);
-                return 0;
-            }
-            else if (strcmp(cmd, "QUIT") == 0)
-            {
-                out += "+OK\r\n";
-                return 1;
-            }
-            else if (strcmp(cmd, "SELECT") == 0 || strcmp(cmd, "CLIENT") == 0)
-            {
-                // Not implemented, but reply OK so redis-cli / redis-benchmark
-                // can complete their handshake.
-                out += "+OK\r\n";
-                return 0;
-            }
-            else if (strcmp(cmd, "COMMAND") == 0 || strcmp(cmd, "CONFIG") == 0)
-            {
-                out += "*0\r\n"; // empty array
-                return 0;
+                case KV_DEL:
+                {
+                    if (argc < 2)
+                    {
+                        out += "-ERR wrong number of arguments for 'del' command\r\n";
+                        return 0;
+                    }
+                    int deleted = 0;
+                    for (int i = 1; i < argc; i++)
+                        if (_engine.del(argv[i], argvlen[i]) == 0)
+                            deleted++;
+                    _resp_append_int(out, deleted);
+                    return 0;
+                }
+                case KV_EXISTS:
+                {
+                    if (argc < 2)
+                    {
+                        out += "-ERR wrong number of arguments for 'exists' command\r\n";
+                        return 0;
+                    }
+                    int found = 0;
+                    for (int i = 1; i < argc; i++)
+                        if (_engine.exist(argv[i], argvlen[i]) == 0)
+                            found++;
+                    _resp_append_int(out, found);
+                    return 0;
+                }
+                case KV_QUIT:
+                    out += "+OK\r\n";
+                    return 1;
+                case KV_SELECT:
+                case KV_CLIENT:
+                    // Not implemented, but reply OK so redis-cli / redis-benchmark
+                    // can complete their handshake.
+                    out += "+OK\r\n";
+                    return 0;
+                case KV_COMMAND:
+                case KV_CONFIG:
+                    out += "*0\r\n"; // empty array
+                    return 0;
+                case KV_SAVE:
+                {
+                    if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::RDB)
+                    {
+                        string tmp_file_path{kv_persistent::RDB_TMP};
+                        tmp_file_path += "_";
+
+                        auto counter = std::to_string(_tmp_file_counter++);
+                        tmp_file_path.append(counter.data(), counter.size());
+
+                        auto &thread_pool = base_component::ThreadPool::instance();
+
+                        int ret = thread_pool.submit(
+                            [this, tmp_file_path = std::move(tmp_file_path)]
+                            {
+                                int ret = _engine.save(tmp_file_path);
+                                (void)ret;
+                            });
+                        out += ret == 0 ? "+OK\r\n" : "-ERR submit save task failed\r\n";
+                        return 0;
+                    }
+                    out += "-ERR Current persistent mode is not rdb\r\n";
+                    return 0;
+                }
+                case KV_SYNC:
+                {
+                    if (!replicate::g_is_master)
+                    {
+                        out += "-ERR This is not a master server\r\n";
+                        return 0;
+                    }
+
+                    // SYNC <replica-rdma-ip> <replica-rdma-port> <slave-tcp ip> <slave-tcp-port>: snapshot the dataset and
+                    // push it over RDMA. The replica must already be listening.
+                    if (argc < 5)
+                    {
+                        out += "-ERR wrong number of arguments for 'SYNC' command\r\n";
+                        return 0;
+                    }
+
+                    // hiredis NUL-terminates every bulk argument, so the address goes
+                    // straight to inet_pton() with no copy; reject embedded NULs.
+                    if (argv[1] == nullptr || argvlen[1] == 0 || strlen(argv[1]) != argvlen[1])
+                    {
+                        out += "-ERR invalid replica address\r\n";
+                        return 0;
+                    }
+
+                    if (argv[3] == nullptr || argvlen[3] == 0 || strlen(argv[3]) != argvlen[3])
+                    {
+                        out += "-ERR invalid slave tcp address\r\n";
+                        return 0;
+                    }
+
+                    KV_INFO("The slave info:\nrdma: %s: %s\ntcp: %s: %s", argv[1], argv[2], argv[3], argv[4]);
+
+                    long long port = 0;
+                    if (!_resp_to_ll(argv[2], argvlen[2], port) || port <= 0 || port > 65535)
+                    {
+                        out += "-ERR invalid replica port\r\n";
+                        return 0;
+                    }
+
+                    string tmp_file_path{kv_persistent::RDB_TMP};
+                    tmp_file_path += "_";
+
+                    auto counter = std::to_string(_tmp_file_counter++);
+                    tmp_file_path.append(counter.data(), counter.size());
+
+                    string replica_ip{argv[1], argvlen[1]};
+                    uint16_t replica_port = static_cast<uint16_t>(port);
+
+                    auto &thread_pool = base_component::ThreadPool::instance();
+
+                    int ret = thread_pool.submit(
+                        [this,
+                         replica_ip = std::move(replica_ip),
+                         replica_port,
+                         tmp_file_path = std::move(tmp_file_path)]
+                        {
+                            int result = _send_replicate(
+                                replica_ip,
+                                replica_port,
+                                tmp_file_path);
+
+                            (void)result;
+                        });
+
+                    out += ret == 0
+                               ? "+OK\r\n"
+                               : "-ERR submit sync task failed\r\n";
+                    return 0;
+                }
+                case KV_SYNCFIN:
+                    return 0;
+                default:
+                    break;
             }
 
             out += "-ERR unknown command\r\n";
-            return 0;
-        }
-
-        int process_sync_payload(char *buffer, size_t size)
-        {
-            size_t idx{0};
-            char *cur_buf = buffer;
-
-            if (!buffer || size == 0)
-                return -1;
-
-            while (idx < size)
-            {
-                uint16_t command{kv_protocal::KVS_START};
-                size_t key_len{0};
-                size_t val_len{0};
-
-                char *key{nullptr};
-                char *value{nullptr};
-
-                if (size - idx < sizeof(uint16_t))
-                {
-                    return -1;
-                }
-                memcpy(&command, cur_buf, sizeof(uint16_t));
-                idx += sizeof(uint16_t);
-                cur_buf += sizeof(uint16_t);
-
-                if (size - idx < sizeof(size_t))
-                {
-                    return -1;
-                }
-
-                memcpy(&key_len, cur_buf, sizeof(size_t));
-                idx += sizeof(size_t);
-                cur_buf += sizeof(size_t);
-
-                if (key_len == 0)
-                    return -1;
-
-                if (size - idx < sizeof(size_t))
-                {
-                    return -1;
-                }
-
-                memcpy(&val_len, cur_buf, sizeof(size_t));
-                idx += sizeof(size_t);
-                cur_buf += sizeof(size_t);
-
-                if (size - idx < key_len)
-                {
-                    return -1;
-                }
-
-                key = cur_buf;
-                idx += key_len;
-                cur_buf += key_len;
-
-                if (size - idx < val_len)
-                    return -1;
-
-                value = cur_buf;
-                idx += val_len;
-                cur_buf += val_len;
-
-                if (_process_sync_payload(command, key_len, key, val_len, value) < 0)
-                    return -2;
-            }
             return 0;
         }
 
@@ -449,52 +536,52 @@ namespace kv_protocal
             return _engine.size();
         }
 
+        int load_snapshot(const string &file_path_str, bool to_disk)
+        {
+            return _engine.load_snapshot(file_path_str, to_disk);
+        }
+
+        template <typename... Args>
+        DataField make_command(const Args &...vars)
+        {
+            constexpr size_t argc = sizeof...(Args);
+
+            if constexpr (argc == 0)
+            {
+                return {};
+            }
+            else
+            {
+                size_t buffer_size = kv_persistent::get_resp_size(vars.size()...);
+
+                char *buffer = (char *)allocator::kv_malloc(buffer_size);
+                if (!buffer)
+                {
+                    return {};
+                }
+
+                if (kv_persistent::format_resp(buffer, vars...) < 0)
+                {
+                    allocator::kv_free(buffer);
+                    return {};
+                }
+
+                return {buffer, buffer_size};
+            }
+        }
+
     private:
         KvProtocal() {}
         ~KvProtocal() {}
 
-        int _process_sync_payload(uint16_t command, size_t key_length, const char *key, size_t value_length, const char *value)
-        {
-            if (key_length == 0 || !key)
-                return -1;
-
-            int ret{0};
-
-            switch (command)
-            {
-                case KVS_SET:
-                {
-                    ret = _engine.set(key, key_length, value, value_length);
-                    if (ret > 0)
-                        ret = _engine.modify(key, key_length, value, value_length);
-                    break;
-                }
-                case KVS_MOD:
-                {
-                    ret = _engine.modify(key, key_length, value, value_length);
-                    break;
-                }
-                case KVS_DEL:
-                {
-                    ret = _engine.del(key, key_length);
-                    break;
-                }
-                default:
-                    ret = -2;
-                    break;
-            }
-
-            return ret;
-        }
-
-        static void _resp_append_int(std::string &out, long long v)
+        static void _resp_append_int(RespSink &out, long long v)
         {
             char buf[32];
             int n = snprintf(buf, sizeof(buf), ":%lld\r\n", v);
             out.append(buf, n);
         }
 
-        static void _resp_append_bulk(std::string &out, const char *data, size_t len)
+        static void _resp_append_bulk(RespSink &out, const char *data, size_t len)
         {
             char hdr[32];
             int n = snprintf(hdr, sizeof(hdr), "$%zu\r\n", len);
@@ -545,6 +632,36 @@ namespace kv_protocal
         {
             ts.tv_sec = static_cast<long>(ms / 1000);
             ts.tv_nsec = static_cast<long>((ms % 1000) * 1000000);
+        }
+
+        /**
+         * @brief the key function to save all data into temp file and send to slave server
+         */
+        int _send_replicate(const string &ip, uint16_t port, const string &tmp_file_path)
+        {
+            // save all data into tmp file
+            if (_engine.save(tmp_file_path, true) < 0)
+            {
+                return -1;
+            }
+
+            // launch rdma server and send the tmp file
+            replicate::MasterServer master(ip.c_str(), port);
+            if (master.init() < 0)
+                return -2;
+
+            KV_INFO("Master rdma init succeed");
+            int ret = master.send((string{kv_persistent::RDB_FOLDER} + tmp_file_path).c_str());
+            if (ret == 1)
+                KV_INFO("Master has no data");
+            else if (ret < 0)
+                return -3;
+
+            KV_INFO("Master rdma send succeed");
+            // close rdma and remove tmp file
+            _engine.remove_temp_file(tmp_file_path);
+            KV_INFO("remove temp file");
+            return 0;
         }
 
         int _split_token(char *body, char **tokens, uint32_t key_length)
@@ -671,6 +788,7 @@ namespace kv_protocal
         KvProtocal &operator=(KvProtocal &&) = delete;
 
         KvEngine _engine;
+        size_t _tmp_file_counter{0};
     };
 
 #ifdef RBTREE_ENGINE
@@ -681,6 +799,8 @@ namespace kv_protocal
     using KvStoreProtocal = KvProtocal<kv_engine::HashEngine>;
 #elif defined(SKIPLIST_ENGINE)
     using KvStoreProtocal = KvProtocal<kv_engine::SkiplistEngine>;
+#else
+    using KvStoreProtocal = KvProtocal<kv_engine::RbtreeEngine>;
 #endif
 } // namespace kv_protocal
 

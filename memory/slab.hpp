@@ -8,7 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "allocator.h"
 #include "memory_utils.h"
+
+#ifdef ENABLE_MEMORY_POOL
 
 namespace memory
 {
@@ -131,5 +134,17 @@ namespace memory
     using Slab = SlabN<ceil_pow2_and_lower8(sizeof(T))>;
 
 } // namespace memory
+
+#define KV_NODE_ALLOC(T) (memory::Slab<T>::instance().malloc())
+#define KV_NODE_FREE(T, ptr) (memory::Slab<T>::instance().free(ptr))
+
+#else // !ENABLE_MEMORY_POOL
+
+// The slab never hands its pages back, so without the pool nodes go straight to
+// the plain allocator and a freed node really is returned to it.
+#define KV_NODE_ALLOC(T) (allocator::kv_malloc(sizeof(T)))
+#define KV_NODE_FREE(T, ptr) (allocator::kv_free(ptr))
+
+#endif // ENABLE_MEMORY_POOL
 
 #endif // __SLAB_H

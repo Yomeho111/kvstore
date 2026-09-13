@@ -65,7 +65,7 @@ namespace base_component
                     {
                         NodeType *tmp = cur->next;
                         cur->~HashNode();
-                        memory::Slab<NodeType>::instance().free(cur);
+                        KV_NODE_FREE(NodeType, cur);
                         cur = tmp;
                     }
                     hash_[i] = nullptr;
@@ -97,14 +97,14 @@ namespace base_component
         int insert(const K &k, const V &v)
         {
 
-            void *ptr = memory::Slab<NodeType>::instance().malloc();
+            void *ptr = KV_NODE_ALLOC(NodeType);
             if (ptr == nullptr)
                 return -1;
             NodeType *node = new (ptr) NodeType(k, v);
             if (insert(node) < 0)
             {
                 node->~NodeType();
-                memory::Slab<NodeType>::instance().free(node);
+                KV_NODE_FREE(NodeType, node);
                 return -1;
             }
             return 0;
@@ -118,7 +118,7 @@ namespace base_component
             size_t idx = hasher_(node->key) % capacity_;
             _remove_from_bucket(node, hash_, idx, capacity_);
             node->~HashNode();
-            memory::Slab<NodeType>::instance().free(node);
+            KV_NODE_FREE(NodeType, node);
             count_--;
         }
 

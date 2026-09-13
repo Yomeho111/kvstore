@@ -8,11 +8,6 @@
 #include "kv_header.h"
 #include "allocator.h"
 
-using string = std::basic_string<
-    char,
-    std::char_traits<char>,
-    allocator::MyAllocator<char>>;
-
 namespace kv_engine
 {
     class EngineInterfaceBase

@@ -67,7 +67,7 @@ namespace base_component
             {
                 NodeType *next = cur->forward[0];
                 cur->~SkipNode();
-                memory::Slab<NodeType>::instance().free(cur);
+                KV_NODE_FREE(NodeType, cur);
                 cur = next;
             }
         }
@@ -117,14 +117,14 @@ namespace base_component
 
         int insert(const K &k, const V &v)
         {
-            void *ptr = memory::Slab<NodeType>::instance().malloc();
+            void *ptr = KV_NODE_ALLOC(NodeType);
             if (ptr == nullptr)
                 return -1;
             NodeType *node = new (ptr) NodeType(k, v);
             if (insert(node) < 0)
             {
                 node->~NodeType();
-                memory::Slab<NodeType>::instance().free(node);
+                KV_NODE_FREE(NodeType, node);
                 return -1;
             }
             return 0;
@@ -159,7 +159,7 @@ namespace base_component
                 update[i]->forward[i] = node->forward[i];
             }
             node->~SkipNode();
-            memory::Slab<NodeType>::instance().free(node);
+            KV_NODE_FREE(NodeType, node);
             count_--;
         }
 

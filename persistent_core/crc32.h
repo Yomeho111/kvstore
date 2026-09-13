@@ -4,49 +4,63 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <array>
+#include <crc.h>
 
 namespace kv_persistent
 {
     namespace checksum
     {
-        // Standard CRC-32 (IEEE 802.3), reflected, polynomial 0xEDB88320.
-        inline constexpr uint32_t CRC32_POLY = 0xEDB88320u;
         inline constexpr uint32_t CRC32_INIT = 0xFFFFFFFFu;
 
-        inline constexpr std::array<uint32_t, 256> make_crc32_table()
+        inline uint32_t crc32_update(
+            uint32_t crc,
+            const void *data,
+            size_t len)
         {
-            std::array<uint32_t, 256> table{};
-            for (uint32_t i = 0; i < 256; ++i)
+            auto *p =
+                const_cast<unsigned char *>(
+                    static_cast<const unsigned char *>(data));
+
+            /*
+             * ISA-L crc32_iscsi() uses int len,
+             * so handle > INT_MAX buffers in chunks.
+             */
+            while (len > static_cast<size_t>(INT_MAX))
             {
-                uint32_t crc = i;
-                for (int bit = 0; bit < 8; ++bit)
-                    crc = (crc & 1u) ? (crc >> 1) ^ CRC32_POLY : (crc >> 1);
-                table[i] = crc;
+                crc = ::crc32_iscsi(
+                    p,
+                    INT_MAX,
+                    crc);
+
+                p += INT_MAX;
+                len -= INT_MAX;
             }
-            return table;
-        }
 
-        inline constexpr std::array<uint32_t, 256> CRC32_TABLE = make_crc32_table();
+            if (len)
+            {
+                crc = ::crc32_iscsi(
+                    p,
+                    static_cast<int>(len),
+                    crc);
+            }
 
-        // Feed more bytes into a running (not yet finalized) crc value.
-        inline uint32_t crc32_update(uint32_t crc, const void *data, size_t len)
-        {
-            const uint8_t *bytes = static_cast<const uint8_t *>(data);
-            for (size_t i = 0; i < len; ++i)
-                crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xFFu] ^ (crc >> 8);
             return crc;
         }
 
-        // Turn a running crc value into the final checksum.
         inline uint32_t crc32_final(uint32_t crc)
         {
             return crc ^ 0xFFFFFFFFu;
         }
 
-        // One-shot checksum over a contiguous buffer.
-        inline uint32_t crc32(const void *data, size_t len)
+        inline uint32_t crc32(
+            const void *data,
+            size_t len)
         {
-            return crc32_final(crc32_update(CRC32_INIT, data, len));
+            return crc32_final(
+                crc32_update(
+                    CRC32_INIT,
+                    data,
+                    len));
         }
     } // namespace checksum
 } // namespace kv_persistent

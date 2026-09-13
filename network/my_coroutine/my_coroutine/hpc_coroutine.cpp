@@ -1,13 +1,18 @@
 #include "hpc_coroutine.h"
 #include <unistd.h>
 #include <stdio.h>
-#include <assert.h>
+#include <errno.h>
 #include <string.h>
 #include "utils.h"
 #include "kv_log.h"
 
 #include "allocator.h"
 #include "timer.h"
+
+#if __has_include(<valgrind/valgrind.h>)
+#include <valgrind/valgrind.h>
+#define KVSTORE_HAS_VALGRIND_STACK_API 1
+#endif
 
 namespace hpc_coroutine
 {
@@ -25,11 +30,6 @@ namespace hpc_coroutine
         {
             close(epfd_);
             epfd_ = -1;
-        }
-        if (stack_ != nullptr)
-        {
-            allocator::kv_free(stack_);
-            stack_ = nullptr;
         }
 
         if (events_ != nullptr)
@@ -49,13 +49,6 @@ namespace hpc_coroutine
             return -1;
         }
 
-        stack_ = allocator::kv_malloc(stack_size_); // posix_memalign(&stack_, getpagesize(), stack_size_);
-        if (stack_ == nullptr)
-        {
-            KV_ERROR("Error allocating stack for scheduler");
-            return -1;
-        }
-
         events_ = (struct epoll_event *)allocator::kv_malloc(sizeof(struct epoll_event) * EPOLL_EVENTS_SIZE);
         if (events_ == nullptr) [[unlikely]]
         {
@@ -66,9 +59,9 @@ namespace hpc_coroutine
         return 0;
     }
 
-    CoroutineSched *CoroutineSched::get_coroutine_sched(int stack_size)
+    CoroutineSched *CoroutineSched::get_coroutine_sched()
     {
-        static thread_local CoroutineSched sched(stack_size);
+        static thread_local CoroutineSched sched;
         static thread_local bool is_init{false};
         if (!is_init)
         {
@@ -80,10 +73,11 @@ namespace hpc_coroutine
 
     void CoroutineSched::run()
     {
-        while (!empty())
+        is_running_ = true;
+        while (!g_shutdown)
         {
             // first process ready
-            while (!ready_queue_.empty())
+            while (!g_shutdown && !ready_queue_.empty())
             {
                 cur_co_ = std::move(ready_queue_.front());
                 ready_queue_.pop();
@@ -91,10 +85,14 @@ namespace hpc_coroutine
                 cur_co_->resume();
             }
 
+            if (g_shutdown || empty())
+                break;
+
             // process the epoll
-            int nready = process_epoll();
-            assert(nready >= 0);
+            if (process_epoll() < 0)
+                break;
         }
+        is_running_ = false;
     }
 
     int CoroutineSched::process_epoll()
@@ -104,8 +102,13 @@ namespace hpc_coroutine
         int nready = epoll_wait(epfd_, events_, EPOLL_EVENTS_SIZE, wait_time);
         if (nready < 0)
         {
-            KV_ERROR("Error epoll_wait");
-            return -1;
+            // epoll_wait is never auto-restarted; a delivered signal just wakes us up.
+            if (errno != EINTR)
+            {
+                KV_ERROR("Error epoll_wait");
+                return -1;
+            }
+            nready = 0;
         }
 
         timer_m.handle_expired();
@@ -128,7 +131,7 @@ namespace hpc_coroutine
     int CoroutineSched::poll_inner(struct ::pollfd *fds, ::nfds_t nfds)
     {
         int nready = ::poll(fds, nfds, 0);
-        if (nready == 0)
+        if (nready == 0 && is_running_)
         {
             // we need to register the fd into epoll, and also put the current co to wait_table_
             uint32_t co_id = cur_co_->get_id();
@@ -165,6 +168,24 @@ namespace hpc_coroutine
         return 0;
     }
 
+    int CoroutineSched::epoll_clear(int fd)
+    {
+        int ret = epoll_ctl(epfd_, EPOLL_CTL_DEL, fd, nullptr);
+
+        if (ret)
+        {
+            if (errno == ENOENT)
+            {
+                return 0;
+            }
+            else if (errno == EBADF)
+            {
+                return -1;
+            }
+        }
+        return 0;
+    }
+
     void CoroutineSched::co_sleep(int ms)
     {
         if (ms <= 0 || cur_co_ == nullptr)
@@ -195,18 +216,31 @@ namespace hpc_coroutine
 
     Coroutine::~Coroutine()
     {
+#ifdef KVSTORE_HAS_VALGRIND_STACK_API
+        if (valgrind_stack_id_ != 0)
+            VALGRIND_STACK_DEREGISTER(valgrind_stack_id_);
+#endif
         if (stack_ != nullptr)
         {
-            free(stack_);
+            allocator::kv_free(stack_);
             stack_ = nullptr;
         }
     }
 
     int Coroutine::init()
     {
+        stack_ = allocator::kv_malloc(MAX_STACK_SIZE);
+        if (stack_ == nullptr)
+            return -1;
+
+#ifdef KVSTORE_HAS_VALGRIND_STACK_API
+        valgrind_stack_id_ = VALGRIND_STACK_REGISTER(
+            stack_, static_cast<char *>(stack_) + MAX_STACK_SIZE);
+#endif
+
         getcontext(&ctx_);
-        ctx_.uc_stack.ss_sp = sched_->get_stack();
-        ctx_.uc_stack.ss_size = sched_->get_stack_size();
+        ctx_.uc_stack.ss_sp = stack_;
+        ctx_.uc_stack.ss_size = MAX_STACK_SIZE;
         ctx_.uc_link = sched_->get_ctx();
 
         makecontext(&ctx_, (void (*)(void))_exec, 1, this);
@@ -214,47 +248,21 @@ namespace hpc_coroutine
         return 0;
     }
 
-    void Coroutine::_save_stack() noexcept
-    {
-        char *top = (char *)sched_->get_stack() + sched_->get_stack_size();
-        char dummy = 0;
-        auto stack_used = top - &dummy;
-        assert(stack_used >= 0);
-        assert(stack_used <= MAX_STACK_SIZE);
-
-        auto stack_used_size = static_cast<size_t>(stack_used);
-        if (stack_size_ < stack_used_size)
-        {
-            stack_ = realloc(stack_, stack_used_size);
-            assert(stack_ != nullptr);
-        }
-        stack_size_ = stack_used_size;
-        memcpy(stack_, &dummy, stack_size_);
-    }
-
-    void Coroutine::_load_stack() noexcept
-    {
-        memcpy(((char *)sched_->get_stack()) + sched_->get_stack_size() - stack_size_, stack_, stack_size_);
-    }
-
     void Coroutine::resume()
     {
         if (status_ == CoroutineStatus::NEW)
         {
-            init();
-        }
-        else
-        {
-            _load_stack();
+            if (init() < 0)
+            {
+                status_ = CoroutineStatus::EXIT;
+                return;
+            }
         }
         swapcontext(sched_->get_ctx(), &ctx_);
     }
 
     void Coroutine::yield()
     {
-        if (status_ != CoroutineStatus::EXIT)
-            _save_stack();
-
         swapcontext(&ctx_, sched_->get_ctx());
     }
 } // namespace hpc_coroutine

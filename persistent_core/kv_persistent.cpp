@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <iostream>
 #include <vector>
+#include <utility>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -17,6 +18,8 @@
 
 #include "kv_header.h"
 #include "crc32.h"
+#include "allocator.h"
+#include "kv_log.h"
 
 namespace kv_persistent
 {
@@ -27,9 +30,7 @@ namespace kv_persistent
     constexpr uint32_t MAGIC{0x4B565354};
     constexpr unsigned KVS_URING_DEPTH{8};
 
-    constexpr const char *RDB_FOLDER{"rdb_data"};
     constexpr const char *RDB_FILE{"kv_0.rdt"};
-    constexpr const char *RDB_TMP{"kv_0.rdt.tmp"};
 
     static bool parse_store_file_index(const fs::path &file_path, int *file_idx)
     {
@@ -57,29 +58,245 @@ namespace kv_persistent
         return true;
     }
 
+    // Parses "*<n>\r\n" followed by n bulk strings. The fields point into `data`.
+    // Returns the number of fields parsed, or -1 when the payload is malformed.
+    static int parse_resp_array(const char *data, size_t size, ConstDataField *out, int max_fields)
+    {
+        size_t offset = 0;
+
+        // reads a decimal number terminated by CRLF and steps past the CRLF
+        auto read_length = [&](size_t *value) -> bool
+        {
+            size_t begin = offset;
+            while (offset < size && data[offset] != '\r')
+                ++offset;
+
+            if (offset == begin || offset + 1 >= size || data[offset + 1] != '\n')
+                return false;
+
+            auto [ptr, ec] = std::from_chars(data + begin, data + offset, *value);
+            if (ec != std::errc() || ptr != data + offset)
+                return false;
+
+            offset += 2;
+            return true;
+        };
+
+        if (offset >= size || data[offset] != '*')
+            return -1;
+        ++offset;
+
+        size_t count = 0;
+        if (!read_length(&count) || count == 0 || count > static_cast<size_t>(max_fields))
+            return -1;
+
+        for (size_t i = 0; i < count; ++i)
+        {
+            if (offset >= size || data[offset] != '$')
+                return -1;
+            ++offset;
+
+            size_t len = 0;
+            if (!read_length(&len) || len > size - offset)
+                return -1;
+
+            out[i].data = data + offset;
+            out[i].size = len;
+            offset += len;
+
+            if (offset + 1 >= size || data[offset] != '\r' || data[offset + 1] != '\n')
+                return -1;
+            offset += 2;
+        }
+
+        return static_cast<int>(count);
+    }
+
+    static int command_from_str(const char *data, size_t len)
+    {
+        for (size_t i = 0; i < sizeof(kv_protocal::command_str) / sizeof(kv_protocal::command_str[0]); ++i)
+        {
+            const char *name = kv_protocal::command_str[i];
+            if (strlen(name) == len && memcmp(name, data, len) == 0)
+                return static_cast<int>(i);
+        }
+        return kv_protocal::KVS_INVALID;
+    }
+
+    StoreEngine &StoreEngine::instance()
+    {
+        static StoreEngine engine;
+        static int ret = engine._init();
+        if (ret < 0)
+        {
+            KV_ERROR("StoreEngine init error");
+            std::exit(-1);
+        }
+        return engine;
+    }
+
+    int StoreEngine::_init()
+    {
+        int i{0};
+        bool expected = false;
+        for (; i < AOF_DEPTH; i++)
+        {
+            write_slot.iov[i] = (char *)allocator::kv_malloc(IOBUFFER_SIZE);
+            if (!write_slot.iov[i])
+            {
+                goto clean;
+            }
+        }
+        write_slot.offset = 0;
+        write_slot.seq = 0;
+        write_slot.written_size = 0;
+
+        if (!ring_ready_)
+        {
+            if (io_uring_queue_init(AOF_DEPTH, &ring_, 0) < 0)
+                goto clean;
+            ring_ready_ = true;
+        }
+
+        if (!is_running_.compare_exchange_strong(expected, true, std::memory_order_acq_rel, std::memory_order_relaxed))
+            goto clean;
+
+        sync_thr_ = std::thread(
+            [this]
+            {
+                while (is_running_.load(std::memory_order_acquire))
+                {
+                    int old_fd{-1};
+                    {
+                        std::unique_lock lk{mtx_};
+                        cv_.wait(lk, [this, &old_fd]
+                                 { return old_fd_que_.dequeue(old_fd) || !is_running_.load(std::memory_order_acquire); });
+                    }
+                    do
+                    {
+                        if (old_fd >= 0)
+                        {
+                            ::fdatasync(old_fd);
+                            ::close(old_fd);
+                        }
+                    } while (old_fd_que_.dequeue(old_fd));
+                }
+            });
+
+        return 0;
+
+    clean:
+
+        for (i -= 1; i >= 0; i--)
+        {
+            allocator::kv_free(write_slot.iov[i]);
+            write_slot.iov[i] = nullptr;
+        }
+
+        return -1;
+    }
+
+    StoreEngine::~StoreEngine()
+    {
+        _close_file();
+
+        is_running_.store(false, std::memory_order_release);
+
+        cv_.notify_all();
+
+        if (sync_thr_.joinable())
+            sync_thr_.join();
+
+        if (ring_ready_)
+        {
+            io_uring_queue_exit(&ring_);
+            ring_ready_ = false;
+        }
+
+        for (int i = 0; i < AOF_DEPTH; i++)
+        {
+            if (write_slot.iov[i])
+            {
+                allocator::kv_free(write_slot.iov[i]);
+                write_slot.iov[i] = nullptr;
+            }
+        }
+    }
+
     int StoreEngine::dump_record(CommandType command, const string &key, const string &value)
     {
         size_t key_len = key.size();
-        size_t val_len = value.size();
         if (!(command == kv_protocal::KVS_SET || command == kv_protocal::KVS_DEL || command == kv_protocal::KVS_MOD) || key_len == 0)
             return -1;
 
         if (fd_ < 0)
         {
             if (_open_file(file_idx_) < 0)
+                return -2;
+        }
+        const char *command_str = kv_protocal::command_str[command];
+        size_t command_size = strnlen(command_str, 32);
+        size_t resp_size = get_resp_size(command_size, key.size(), value.size());
+        size_t buffer_size = sizeof(MAGIC) + sizeof(uint32_t) + sizeof(resp_size) + resp_size;
+
+        if (IOBUFFER_SIZE - write_slot.offset >= buffer_size)
+        {
+            _make_up_dump_buffer({command_str, command_size}, {write_slot.iov[write_slot.seq] + write_slot.offset, buffer_size}, key, value, resp_size);
+            write_slot.offset += buffer_size;
+
+            if (write_slot.offset == IOBUFFER_SIZE)
+            {
+                if (_flush() < 0)
+                    return -3;
+            }
+        }
+        else
+        {
+            if (_flush() < 0)
                 return -3;
+
+            if (IOBUFFER_SIZE - write_slot.offset >= buffer_size)
+            {
+                _make_up_dump_buffer({command_str, command_size}, {write_slot.iov[write_slot.seq] + write_slot.offset, buffer_size}, key, value, resp_size);
+                write_slot.offset += buffer_size;
+
+                if (write_slot.offset == IOBUFFER_SIZE)
+                {
+                    if (_flush() < 0)
+                        return -3;
+                }
+            }
+            else
+            {
+                char *buffer = (char *)allocator::kv_malloc(buffer_size);
+                if (!buffer)
+                    return -4;
+
+                _make_up_dump_buffer({command_str, command_size}, {buffer, buffer_size}, key, value, resp_size);
+
+                if (_append(buffer, buffer_size) < 0)
+                {
+                    allocator::kv_free(buffer);
+                    return -5;
+                }
+                allocator::kv_free(buffer);
+            }
         }
 
-        uint32_t crc = 0;
-        size_t buffer_size = sizeof(MAGIC) + sizeof(crc) + sizeof(command) + sizeof(key_len) + key_len + sizeof(val_len) + val_len;
+        file_size += buffer_size;
 
-        char *buffer = (char *)allocator::kv_malloc(buffer_size);
-        if (!buffer)
-            return -2;
+        if (_switch_new_file() < 0)
+        {
+            return -6;
+        }
 
-        char *cur = buffer;
+        return 0;
+    }
 
-        // write magic
+    int StoreEngine::_make_up_dump_buffer(const ConstDataField &command_data, const DataField &buffer_data, const string &key, const string &value, size_t resp_size)
+    {
+        uint32_t crc{0};
+        char *cur = buffer_data.data;
         memcpy(cur, &MAGIC, sizeof(MAGIC));
         cur += sizeof(MAGIC);
 
@@ -90,82 +307,107 @@ namespace kv_persistent
         // the crc32 covers everything from here to the end of the record (command .. value)
         char *payload = cur;
 
-        // write command
-        memcpy(cur, &command, sizeof(command));
-        cur += sizeof(command);
+        // write resp_size
+        memcpy(cur, &resp_size, sizeof(resp_size));
+        cur += sizeof(resp_size);
 
-        // write key_len
-        memcpy(cur, &key_len, sizeof(key_len));
-        cur += sizeof(key_len);
-
-        // write key
-        memcpy(cur, key.data(), key_len);
-        cur += key_len;
-
-        // write value_len
-        memcpy(cur, &val_len, sizeof(val_len));
-        cur += sizeof(val_len);
-
-        // write value
-        if (val_len > 0)
-        {
-            memcpy(cur, value.data(), val_len);
-        }
+        // format resp
+        format_resp(cur, std::string_view{command_data.data, command_data.size}, key, value);
 
         // compute the crc32 over the payload and store it right after the magic
-        crc = checksum::crc32(payload, buffer_size - sizeof(MAGIC) - sizeof(crc));
+        crc = checksum::crc32(payload, buffer_data.size - sizeof(MAGIC) - sizeof(crc));
         memcpy(crc_slot, &crc, sizeof(crc));
-
-        // append the serialized record to disk through io_uring
-        if (_append(buffer, buffer_size) < 0)
-        {
-            allocator::kv_free(buffer);
-            return -5;
-        }
-
-        file_size += buffer_size;
-
-        if (file_size > MAX_BYTES_PER_FILE)
-        {
-            int ret = _switch_new_file();
-            if (ret < 0)
-            {
-                allocator::kv_free(buffer);
-                return -6;
-            }
-        }
-
-        allocator::kv_free(buffer);
         return 0;
     }
 
     int StoreEngine::_append(const char *buf, size_t len)
     {
-        size_t written = 0;
-        while (written < len)
+        size_t submitted{0};
+        size_t left{len};
+        while (submitted < len)
         {
-            struct io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
-            if (sqe == nullptr)
-                return -1;
+            size_t space = IOBUFFER_SIZE - write_slot.offset;
+            size_t write_len = space > left ? left : space;
+            memcpy(write_slot.iov[write_slot.seq] + write_slot.offset, buf + submitted, write_len);
 
-            io_uring_prep_write(sqe, fd_, buf + written, static_cast<unsigned>(len - written), file_size + written);
+            submitted += write_len;
+            left -= write_len;
+            write_slot.offset += write_len;
 
-            // submit the write and wait for its completion in a single syscall
-            if (io_uring_submit_and_wait(&ring_, 1) < 0)
-                return -1;
-
-            struct io_uring_cqe *cqe = nullptr;
-            if (io_uring_peek_cqe(&ring_, &cqe) < 0 || cqe == nullptr)
-                return -1;
-
-            int res = cqe->res;
-            io_uring_cqe_seen(&ring_, cqe);
-
-            if (res <= 0)
-                return -1;
-
-            written += static_cast<size_t>(res);
+            if (write_slot.offset == IOBUFFER_SIZE)
+            {
+                if (_flush() < 0)
+                    return -1;
+            }
         }
+        return 0;
+    }
+
+    int StoreEngine::_submit_io_write()
+    {
+        if (write_slot.offset == 0)
+            return 0;
+
+        struct io_uring_sqe *sqe = io_uring_get_sqe(&ring_);
+        if (sqe == nullptr)
+        {
+            if (io_uring_submit(&ring_) < 0)
+                return -2;
+            sqe = io_uring_get_sqe(&ring_);
+            if (sqe == nullptr)
+                return -2;
+        }
+
+        io_uring_prep_write(sqe, fd_, write_slot.iov[write_slot.seq], write_slot.offset, write_slot.written_size);
+
+        io_uring_sqe_set_data64(sqe, write_slot.offset);
+
+        write_slot.written_size += write_slot.offset;
+        inflight_++;
+        write_slot.seq = (write_slot.seq + 1) & (AOF_DEPTH - 1);
+        write_slot.offset = 0;
+        return 0;
+    }
+
+    int StoreEngine::_commit_io_uring(int high_watermark)
+    {
+        if (!ring_ready_)
+            return 0;
+
+        if (io_uring_submit(&ring_) < 0)
+            return -1;
+        while (inflight_ > high_watermark)
+            if (_reap_one() < 0)
+                return -2;
+        return 0;
+    }
+
+    int StoreEngine::_reap_one()
+    {
+        struct io_uring_cqe *cqe = nullptr;
+        if (io_uring_wait_cqe(&ring_, &cqe) < 0)
+            return -1;
+
+        int res = cqe->res;
+        size_t expected = io_uring_cqe_get_data64(cqe);
+        io_uring_cqe_seen(&ring_, cqe);
+        inflight_--;
+
+        // a write to a regular file writes everything unless it errored
+        if (res < 0 || static_cast<size_t>(res) != expected)
+            return -1;
+        return 0;
+    }
+
+    int StoreEngine::_flush()
+    {
+        if (inflight_ >= AOF_DEPTH - 1)
+        {
+            if (_commit_io_uring(AOF_DEPTH / 2) < 0)
+                return -1;
+        }
+        if (_submit_io_write())
+            return -2;
         return 0;
     }
 
@@ -258,10 +500,7 @@ namespace kv_persistent
         {
             uint32_t magic = 0;
             uint32_t stored_crc = 0;
-            uint32_t computed_crc = checksum::CRC32_INIT;
-            CommandType command = 0;
-            size_t key_len = 0;
-            size_t val_len = 0;
+            size_t resp_size = 0;
 
             if (!read_at(&magic, sizeof(magic)))
             {
@@ -274,79 +513,75 @@ namespace kv_persistent
                 break;
             }
 
-            // the crc32 is stored right after the magic and covers command .. value
             if (!read_at(&stored_crc, sizeof(stored_crc)))
             {
                 rc = -3;
                 break;
             }
 
-            if (!read_at(&command, sizeof(command)))
+            // the crc32 covers the length prefix together with the RESP payload
+            const char *payload = data + offset;
+            if (!read_at(&resp_size, sizeof(resp_size)))
             {
                 rc = -3;
                 break;
             }
-            computed_crc = checksum::crc32_update(computed_crc, &command, sizeof(command));
 
-            if (!read_at(&key_len, sizeof(key_len)))
-            {
-                rc = -3;
-                break;
-            }
-            computed_crc = checksum::crc32_update(computed_crc, &key_len, sizeof(key_len));
-
-            // a valid key must be non-empty and fit within the bytes left in the file
-            if (key_len == 0 || key_len > size - offset)
+            if (resp_size == 0 || resp_size > size - offset)
             {
                 rc = -4;
                 break;
             }
-            const char *key = data + offset;
-            offset += key_len;
-            computed_crc = checksum::crc32_update(computed_crc, key, key_len);
+            const char *resp = data + offset;
+            offset += resp_size;
 
-            if (!read_at(&val_len, sizeof(val_len)))
-            {
-                rc = -3;
-                break;
-            }
-            computed_crc = checksum::crc32_update(computed_crc, &val_len, sizeof(val_len));
-
-            // the value must also fit within the remaining bytes of the file
-            if (val_len > size - offset)
-            {
-                rc = -4;
-                break;
-            }
-            const char *value = nullptr;
-            if (val_len > 0)
-            {
-                value = data + offset;
-                offset += val_len;
-                computed_crc = checksum::crc32_update(computed_crc, value, val_len);
-            }
-
-            // the recomputed crc32 must match the stored one, otherwise the record is corrupt
-            if (checksum::crc32_final(computed_crc) != stored_crc)
+            if (checksum::crc32(payload, sizeof(resp_size) + resp_size) != stored_crc)
             {
                 rc = -7;
                 break;
             }
 
-            // the engine copies key/value into its own storage, so passing pointers
-            // into the read-only mapping is safe
-            int ret = 0;
-            if (command == kv_protocal::KVS_SET)
-                ret = engine->set(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, false);
-            else if (command == kv_protocal::KVS_DEL)
-                ret = engine->del(const_cast<char *>(key), key_len, false);
-            else if (command == kv_protocal::KVS_MOD)
-                ret = engine->modify(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, false);
-            else
+            // [0] command, [1] key, [2] value (absent when the value is empty)
+            ConstDataField fields[3];
+            int field_count = parse_resp_array(resp, resp_size, fields, 3);
+            if (field_count < 2 || fields[1].size == 0)
             {
                 rc = -4;
                 break;
             }
+
+            const char *key = fields[1].data;
+            size_t key_len = fields[1].size;
+            const char *value = field_count > 2 ? fields[2].data : nullptr;
+            size_t val_len = field_count > 2 ? fields[2].size : 0;
+
+            // the engine copies key/value into its own storage, so passing pointers
+            // into the read-only mapping is safe
+            int ret = 0;
+            switch (command_from_str(fields[0].data, fields[0].size))
+            {
+                case kv_protocal::KVS_SET:
+                {
+                    ret = engine->set(key, key_len, value, val_len, nullptr, false);
+                    if (ret > 0)
+                    {
+                        ret = engine->modify(key, key_len, value, val_len, nullptr, false);
+                    }
+                    break;
+                }
+                case kv_protocal::KVS_DEL:
+                    ret = engine->del(key, key_len, false);
+                    break;
+                case kv_protocal::KVS_MOD:
+                    ret = engine->modify(key, key_len, value, val_len, nullptr, false);
+                    break;
+                default:
+                    rc = -4;
+                    break;
+            }
+
+            if (rc != 0)
+                break;
 
             if (ret != 0)
             {
@@ -389,14 +624,6 @@ namespace kv_persistent
         fs::path file_path =
             folder / (std::string(STORE_FILE_ROOT) + "_" + std::to_string(idx) + ".dt");
 
-        // set up the io_uring submission ring once; it is reused across file rotations
-        if (!ring_ready_)
-        {
-            if (io_uring_queue_init(KVS_URING_DEPTH, &ring_, 0) < 0)
-                return -6;
-            ring_ready_ = true;
-        }
-
         int fd = ::open(file_path.c_str(), O_WRONLY | O_CREAT, 0644);
         if (fd < 0)
             return -5;
@@ -411,43 +638,65 @@ namespace kv_persistent
 
         fd_ = fd;
         file_size = static_cast<size_t>(end);
+        write_slot.written_size = file_size;
         return 0;
     }
 
-    void StoreEngine::_close_file()
+    int StoreEngine::_close_file()
     {
         if (fd_ >= 0)
         {
-            ::close(fd_);
-            fd_ = -1;
+            if (_submit_io_write() < 0)
+                return -1;
+            if (_commit_io_uring(0))
+                return -2;
+
+            int old_fd = std::exchange(fd_, -1);
+            old_fd_que_.enqueue(old_fd);
+            cv_.notify_one();
         }
+
         file_size = 0;
+        write_slot.written_size = 0;
+        return 0;
     }
 
     int StoreEngine::_switch_new_file()
     {
-        _close_file();
+        if (file_size > MAX_BYTES_PER_FILE)
+        {
+            _close_file();
 
-        int next_idx = file_idx_ + 1;
-        int ret = _open_file(next_idx);
-        if (ret < 0)
-            return ret;
+            int next_idx = file_idx_ + 1;
+            int ret = _open_file(next_idx);
+            if (ret < 0)
+                return ret;
 
-        file_idx_ = next_idx;
+            file_idx_ = next_idx;
+        }
         return 0;
     }
 
     // ------------------------------ RDB snapshot ------------------------------
 
+    SnapshotEngine &SnapshotEngine::instance()
+    {
+        static SnapshotEngine engine;
+        return engine;
+    }
+
     SnapshotEngine::~SnapshotEngine()
     {
         if (ring_ready_)
+        {
             io_uring_queue_exit(&ring_);
+            ring_ready_ = false;
+        }
         if (fd_ >= 0)
             ::close(fd_);
     }
 
-    int SnapshotEngine::prepare()
+    int SnapshotEngine::prepare(const string &tmp_file_path)
     {
         std::error_code ec;
         fs::path folder{RDB_FOLDER};
@@ -465,7 +714,7 @@ namespace kv_persistent
         if (!fs::is_directory(folder, ec) || ec)
             return -3;
 
-        fs::path tmp_path = folder / RDB_TMP;
+        fs::path tmp_path = folder / tmp_file_path;
         int fd = ::open(tmp_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd < 0)
             return -5;
@@ -509,11 +758,8 @@ namespace kv_persistent
         if (key_len == 0)
             return -1;
 
-        const CommandType command = kv_protocal::KVS_SET;
-
         // crc32 over command .. value, computed incrementally without allocating
         uint32_t crc = checksum::CRC32_INIT;
-        crc = checksum::crc32_update(crc, &command, sizeof(command));
         crc = checksum::crc32_update(crc, &key_len, sizeof(key_len));
         crc = checksum::crc32_update(crc, key.data(), key_len);
         crc = checksum::crc32_update(crc, &val_len, sizeof(val_len));
@@ -550,8 +796,6 @@ namespace kv_persistent
         cur += sizeof(MAGIC);
         memcpy(cur, &crc, sizeof(crc));
         cur += sizeof(crc);
-        memcpy(cur, &command, sizeof(command));
-        cur += sizeof(command);
         memcpy(cur, &key_len, sizeof(key_len));
         memcpy(slot->vlen, &val_len, sizeof(val_len));
 
@@ -597,7 +841,7 @@ namespace kv_persistent
         return 0;
     }
 
-    int SnapshotEngine::commit()
+    int SnapshotEngine::commit(const string &tmp_file_path)
     {
         if (fd_ >= 0)
         {
@@ -607,13 +851,13 @@ namespace kv_persistent
 
         std::error_code ec;
         fs::path folder{RDB_FOLDER};
-        fs::rename(folder / RDB_TMP, folder / RDB_FILE, ec);
+        fs::rename(folder / tmp_file_path, folder / RDB_FILE, ec);
         if (ec)
             return -1;
         return 0;
     }
 
-    void SnapshotEngine::discard()
+    void SnapshotEngine::discard(const string &tmp_file_path)
     {
         if (fd_ >= 0)
         {
@@ -622,16 +866,16 @@ namespace kv_persistent
         }
 
         std::error_code ec;
-        fs::remove(fs::path{RDB_FOLDER} / RDB_TMP, ec);
+        fs::remove(fs::path{RDB_FOLDER} / tmp_file_path, ec);
     }
 
-    int SnapshotEngine::load(kv_engine::EngineInterfaceBase *engine)
+    int SnapshotEngine::load(kv_engine::EngineInterfaceBase *engine, const string &file_path_str, bool to_disk)
     {
         if (engine == nullptr)
             return -1;
 
         std::error_code ec;
-        fs::path file_path = fs::path{RDB_FOLDER} / RDB_FILE;
+        fs::path file_path{file_path_str};
 
         if (!fs::exists(file_path, ec))
         {
@@ -674,7 +918,6 @@ namespace kv_persistent
             uint32_t magic = 0;
             uint32_t stored_crc = 0;
             uint32_t computed_crc = checksum::CRC32_INIT;
-            CommandType command = 0;
             size_t key_len = 0;
             size_t val_len = 0;
 
@@ -694,13 +937,6 @@ namespace kv_persistent
                 rc = -3;
                 break;
             }
-
-            if (!read_at(&command, sizeof(command)))
-            {
-                rc = -3;
-                break;
-            }
-            computed_crc = checksum::crc32_update(computed_crc, &command, sizeof(command));
 
             if (!read_at(&key_len, sizeof(key_len)))
             {
@@ -745,16 +981,11 @@ namespace kv_persistent
             }
 
             int ret = 0;
-            if (command == kv_protocal::KVS_SET)
-                ret = engine->set(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, false);
-            else if (command == kv_protocal::KVS_DEL)
-                ret = engine->del(const_cast<char *>(key), key_len, false);
-            else if (command == kv_protocal::KVS_MOD)
-                ret = engine->modify(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, false);
-            else
+
+            ret = engine->set(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, to_disk);
+            if (ret > 0)
             {
-                rc = -4;
-                break;
+                ret = engine->modify(const_cast<char *>(key), key_len, const_cast<char *>(value), val_len, nullptr, to_disk);
             }
 
             if (ret != 0)

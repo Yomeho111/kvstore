@@ -11,16 +11,17 @@
 #include <sys/wait.h>
 #include <cerrno>
 #include <mutex>
+#include <filesystem>
 #include "engine_interface_base.h"
 #include "allocator.h"
 #include "kv_persistent.h"
 #include "memory_utils.h"
 #include "slab.hpp"
 #include "timer.h"
-#include "replicate.h"
 
 namespace kv_engine
 {
+    namespace fs = std::filesystem;
     template <typename RealEngine>
     class EngineInterface : public EngineInterfaceBase
     {
@@ -49,11 +50,8 @@ namespace kv_engine
                 return -1;
 
             if (to_disk && kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF &&
-                store_engine.dump_record(kv_protocal::KVS_SET, key_s, val_s) < 0)
+                kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_SET, key_s, val_s) < 0)
                 return -2;
-
-            if (to_disk && replicate::g_replicate && replicate::DeltaSyncObject::instance().insert_node(kv_protocal::KVS_SET, key_len, val_len, key, value) < 0)
-                return -3;
 
             if (timeout && timeout->tv_sec != -1 && timeout->tv_nsec != -1)
             {
@@ -65,10 +63,8 @@ namespace kv_engine
                     {
                         std::lock_guard lk{this->lock_};
                         static_cast<RealEngine *>(this)->get_base().delNode(k_s);
-                        if (to_disk && replicate::g_replicate && replicate::DeltaSyncObject::instance().insert_node(kv_protocal::KVS_DEL, k_s.size(), 0, k_s.c_str(), nullptr) < 0)
-                            ;
-                        if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF)
-                            this->store_engine.dump_record(kv_protocal::KVS_DEL, k_s, string{});
+                        if (to_disk && kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF)
+                            kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_DEL, k_s, string{});
                     });
             }
             return 0;
@@ -117,11 +113,8 @@ namespace kv_engine
             node->value = val_s;
 
             if (to_disk && kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF &&
-                store_engine.dump_record(kv_protocal::KVS_MOD, key_s, val_s) < 0)
+                kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_MOD, key_s, val_s) < 0)
                 return -2;
-
-            if (to_disk && replicate::g_replicate && replicate::DeltaSyncObject::instance().insert_node(kv_protocal::KVS_MOD, key_len, val_len, key, value) < 0)
-                return -3;
 
             if (timeout && timeout->tv_sec != -1 && timeout->tv_nsec != -1)
             {
@@ -133,10 +126,8 @@ namespace kv_engine
                     {
                         std::lock_guard lk{this->lock_};
                         static_cast<RealEngine *>(this)->get_base().delNode(k_s);
-                        if (to_disk && replicate::g_replicate && replicate::DeltaSyncObject::instance().insert_node(kv_protocal::KVS_DEL, k_s.size(), 0, k_s.c_str(), nullptr) < 0)
-                            ;
-                        if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF)
-                            this->store_engine.dump_record(kv_protocal::KVS_DEL, k_s, string{});
+                        if (to_disk && kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF)
+                            kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_DEL, k_s, string{});
                     });
             }
             return 0;
@@ -157,11 +148,9 @@ namespace kv_engine
                 return 1;
 
             if (to_disk && kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF &&
-                store_engine.dump_record(kv_protocal::KVS_DEL, key_s, string{}) < 0)
+                kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_DEL, key_s, string{}) < 0)
                 return -2;
 
-            if (to_disk && replicate::g_replicate && replicate::DeltaSyncObject::instance().insert_node(kv_protocal::KVS_DEL, key_len, 0, key, nullptr) < 0)
-                return -3;
             return 0;
         }
 
@@ -187,15 +176,16 @@ namespace kv_engine
             if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::NONE)
                 return 0;
             if (kv_persistent::g_persist_mode == kv_persistent::PersistMode::RDB)
-                return snapshot_engine.load(this);
-            return store_engine.load_record(this);
+                return load_snapshot();
+            return kv_persistent::StoreEngine::instance().load_record(this);
         }
 
         // Fork a child that writes a point-in-time RDB snapshot of the whole dataset.
         // The parent only holds the lock across fork() and then keeps serving.
-        int save()
+        int save(const string &tmp_file_path, bool for_temp = false)
         {
-            if (snapshot_engine.prepare() < 0)
+            auto &snapshot_engine = kv_persistent::SnapshotEngine::instance();
+            if (snapshot_engine.prepare(tmp_file_path) < 0)
                 return -1;
 
             lock_.lock();
@@ -223,7 +213,7 @@ namespace kv_engine
             if (pid < 0)
             {
                 lock_.unlock();
-                snapshot_engine.discard();
+                snapshot_engine.discard(tmp_file_path);
                 return -1;
             }
 
@@ -234,11 +224,38 @@ namespace kv_engine
             {
             }
 
-            if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-                return snapshot_engine.commit();
+            if (!(WIFEXITED(status) && WEXITSTATUS(status) == 0))
+            {
+                snapshot_engine.discard(tmp_file_path);
+                return -1;
+            }
 
-            snapshot_engine.discard();
-            return -1;
+            if (for_temp)
+                return 0;
+            return snapshot_engine.commit(tmp_file_path);
+        }
+
+        void remove_temp_file(const string &tmp_file_name)
+        {
+            kv_persistent::SnapshotEngine::instance().discard(tmp_file_name);
+            std::error_code ec;
+            const fs::path path{kv_persistent::RDB_FOLDER};
+
+            if (!fs::exists(path, ec))
+                return;
+
+            if (!fs::is_directory(path, ec))
+                return;
+
+            if (!fs::is_empty(path, ec))
+                return;
+
+            fs::remove(path, ec);
+        }
+
+        int load_snapshot(const string &file_path = kv_persistent::RDB_DEFAULT_PATH, bool to_disk = false)
+        {
+            return kv_persistent::SnapshotEngine::instance().load(this, file_path, to_disk);
         }
 
         auto begin()
@@ -268,12 +285,6 @@ namespace kv_engine
         }
 
     private:
-        kv_persistent::StoreEngine store_engine;
-        // RDB snapshot engine. Kept as a member so its ~6KB io_uring pipeline buffer
-        // lives in the engine's storage (static, for the singleton) instead of on the
-        // small SIGUSR1 dump thread's stack. Only exercised in RDB mode.
-        kv_persistent::SnapshotEngine snapshot_engine;
-
         memory::SpinLock lock_;
     };
 } // namespace kv_engine

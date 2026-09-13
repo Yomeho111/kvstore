@@ -3,7 +3,7 @@
 A high-performance, persistent, in-memory key–value store written in modern C++20.
 
 KVStore is a learning-oriented yet feature-complete storage server. It is built around
-**pluggable networking models** (Reactor / Proactor / Coroutine), **pluggable storage
+**pluggable networking model** (Coroutine), **pluggable storage
 engines** (Red-Black Tree / Hash / Skiplist / Array), an **append-only persistence layer**
 with crash recovery, **master–slave replication**, **per-key TTL/timeout expiration**, and
 an optional **custom memory pool allocator** (tcmalloc-style).
@@ -100,7 +100,7 @@ replay every record in order with to_disk=false`.
 | [core_engine/](core_engine/) | Storage engines and the abstract `EngineInterface`. |
 | [base_component/](base_component/) | Data structures: `rbtree`, `hash`, `skiplist`, `array`. |
 | [persistent_core/](persistent_core/) | `StoreEngine` — append-only write-ahead log + recovery. |
-| [network/](network/) | Network backends: `reactor/`, `proactor/`, `my_coroutine/`. |
+| [network/](network/) | Network backend: `my_coroutine/`. |
 | [protocal/](protocal/) | Wire protocol: headers (`kv_header.h`) and codec (`kv_protocal.hpp`). |
 | [replication/](replication/) | `RepManager` — master/slave replication. |
 | [timer/](timer/) | Timer manager for TTL / scheduled key expiration. |
@@ -125,7 +125,6 @@ All options are passed to CMake with `-D<OPTION>=<VALUE>`.
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
-| `NETWORK` | `REACTOR`, `PROACTOR`, `COROUTINE` | `REACTOR` | Network backend. |
 | `ENGINE` | `RBTREE_ENGINE`, `HASH_ENGINE`, `SKIPLIST_ENGINE`, `ARRAY_ENGINE` | `RBTREE_ENGINE` | Storage engine. |
 | `KVSTORE_PORT_NUM` | integer | `20` | Number of consecutive ports to listen on. |
 | `KVSTORE_ENABLE_TIMER` | `ON`/`OFF` | `OFF` | Enable connection timing logs. |
@@ -149,14 +148,14 @@ cmake --build build
 Reactor with the built-in memory pool, single listening port:
 
 ```bash
-cmake -S . -B build -DNETWORK=REACTOR -DKVSTORE_PORT_NUM=1 -DENABLE_MEMORY_POOL=ON
+cmake -S . -B build -DKVSTORE_PORT_NUM=1 -DENABLE_MEMORY_POOL=ON
 cmake --build build
 ```
 
 Proactor (`io_uring`) backend with the hash engine:
 
 ```bash
-cmake -S . -B build -DNETWORK=PROACTOR -DENGINE=HASH_ENGINE
+cmake -S . -B build -DENGINE=HASH_ENGINE
 cmake --build build
 ```
 
@@ -165,6 +164,10 @@ Release build with tcmalloc:
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_TCMALLOC=ON
 cmake --build build
+```
+
+```bash
+cd /home/mingfeng/kvstore && KV_PORT=8060 bash scripts/benchmark_compare.sh --no-build 2>&1 | tee /tmp/benchmark_compare.log
 ```
 
 ### Build Artifacts
@@ -350,8 +353,7 @@ is append-only with no snapshots or compaction.
   thread-safe via an internal `SpinLock`.
 - **Red-Black tree** — [base_component/rbtree/rbtree.hpp](base_component/rbtree/rbtree.hpp)
   provides ordered O(log n) operations, with nodes allocated from a slab allocator.
-- **Network backends** — [network/reactor/](network/reactor/) (epoll),
-  [network/proactor/](network/proactor/) (`io_uring`), and
+- **Network backends** — 
   [network/my_coroutine/](network/my_coroutine/) (stackful coroutines).
 - **Memory pool** — [memory/](memory/) implements a tcmalloc-style allocator:
   `thread_cache` → `central_pool` → `page_allocator`, with a `slab` for fixed-size objects.
@@ -376,11 +378,18 @@ A client-driven test harness is built as `kvstore_client_testcase`. Start a serv
 
 ### Memory Profiling
 
-The server's memory footprint under different allocators was profiled with
-[memory_probe/mem_profile.sh](memory_probe/mem_profile.sh), which samples
-`/proc/<pid>/status`. Each run used a **Release** build of the default
-`REACTOR` + `RBTREE_ENGINE` server on port 8050 with the `data/` directory
-cleared beforehand, driven through the test harness:
+The server's memory footprint under each allocator is measured by
+[scripts/mem_profile_allocators.sh](scripts/mem_profile_allocators.sh). It rebuilds the
+project once per configuration, starts the server in a fresh working directory with an
+empty `data/`, samples `/proc/<pid>/status`, and prints the table below:
+
+```bash
+scripts/mem_profile_allocators.sh                  # all four configurations
+scripts/mem_profile_allocators.sh nopool jemalloc  # a subset
+```
+
+Each run used a **Release** build of the default `REACTOR` + `RBTREE_ENGINE` server on
+port 8050 with `persistence.mode = aof`, driven through the test harness:
 
 - **Peak / full set** — `kvstore_client_testcase <ip> 8050 5` inserts 500 000
   keys, each with a 1 KB value (`testcase_set`).
@@ -389,25 +398,83 @@ cleared beforehand, driven through the test harness:
 
 Memory is reported as **virtual** (`VmSize`) and **physical / resident**
 (`VmRSS`), sampled just after the server binds (start), after the full set is
-loaded (peak), and after every key is deleted (end).
+loaded (peak), and three seconds after the last key is deleted (end).
 
 | Allocator | Metric | Start (MB) | Peak / full set (MB) | End / after DEL (MB) |
 | --- | --- | --- | --- | --- |
-| No pool (glibc `malloc`) | Virtual (`VmSize`) | 94.48 | 653.52 | 653.52 |
-| No pool (glibc `malloc`) | Physical (`VmRSS`) | 91.43 | 650.82 | 650.82 |
-| Custom pool (`-DENABLE_MEMORY_POOL=ON`) | Virtual (`VmSize`) | 94.51 | 716.23 | 716.23 |
-| Custom pool (`-DENABLE_MEMORY_POOL=ON`) | Physical (`VmRSS`) | 91.53 | 713.50 | 713.51 |
-| tcmalloc (`-DENABLE_TCMALLOC=ON`) | Virtual (`VmSize`) | 105.21 | 724.21 | 724.21 |
-| tcmalloc (`-DENABLE_TCMALLOC=ON`) | Physical (`VmRSS`) | 99.50 | 721.40 | 721.40 |
+| No pool (glibc `malloc`) | Virtual (`VmSize`) | 96.79 | 646.18 | 216.43 |
+| No pool (glibc `malloc`) | Physical (`VmRSS`) | 93.03 | 642.61 | **93.25** |
+| Custom pool (`-DENABLE_MEMORY_POOL=ON`) | Virtual (`VmSize`) | 96.81 | 718.53 | 718.54 |
+| Custom pool (`-DENABLE_MEMORY_POOL=ON`) | Physical (`VmRSS`) | 93.09 | 714.85 | 714.86 |
+| tcmalloc (`-DENABLE_TCMALLOC=ON`) | Virtual (`VmSize`) | 107.51 | 711.52 | 711.52 |
+| tcmalloc (`-DENABLE_TCMALLOC=ON`) | Physical (`VmRSS`) | 98.32 | 704.84 | 704.84 |
+| jemalloc (`-DENABLE_JEMALLOC=ON`) | Virtual (`VmSize`) | 107.58 | 804.59 | 804.59 |
+| jemalloc (`-DENABLE_JEMALLOC=ON`) | Physical (`VmRSS`) | 99.82 | 757.72 | **131.38** |
 
-> After the full working set is deleted, none of the three allocators return the
-> freed physical pages to the OS — resident memory stays at its peak. glibc
-> `malloc` is the most compact; the custom pool (713 MB) and tcmalloc (721 MB)
-> land within ~10% of it. The custom pool uses **sub-octave size classes** — each
-> power-of-two octave is split into 8 evenly spaced classes (≤12.5% internal
-> fragmentation) — so a 1 KB value takes a 1152 B block instead of the 2048 B a
-> pure power-of-two scheme would use (which previously pushed its peak to
-> ~1132 MB).
+Subtracting the start baseline isolates the resident cost of the 500 000-key
+working set and shows how much of it survives the deletes:
+
+| Allocator | Working set (peak − start) | Retained after DEL (end − start) | Returned to the OS |
+| --- | --- | --- | --- |
+| No pool (glibc `malloc`) | 549.6 MB | 0.2 MB | **99.96%** |
+| Custom pool | 621.8 MB | 621.8 MB | 0% |
+| tcmalloc | 606.5 MB | 606.5 MB | 0% |
+| jemalloc | 657.9 MB | 31.6 MB | 95.2% |
+
+**None of this is a leak.** Every node destructor runs and every `key` / `value`
+string is handed back to its allocator — Valgrind reports zero lost bytes for the
+same insert/delete workload (see
+[memory_probe/valgrind_nopool_set_del.log](memory_probe/valgrind_nopool_set_del.log)).
+What the table actually measures is whether an allocator *returns* freed pages to the
+kernel:
+
+- **glibc `malloc`** parks freed chunks in its bins. A 1 KB value is far below
+  `MMAP_THRESHOLD` (128 KB), so it lives in the `brk` heap, which only shrinks when the
+  top of the heap is contiguously free. The no-pool build therefore calls
+  `malloc_trim(0)` from `MyAllocator::deallocate` after every `free()`
+  ([memory/allocator.h](memory/allocator.h)), and with that in place resident memory
+  returns to 93.25 MB against a 93.03 MB baseline — effectively the entire working set
+  is given back. `VmSize` settles at 216 MB rather than the original 97 MB because the
+  per-thread arenas stay mapped after `MADV_DONTNEED`.
+- **The custom pool** and **tcmalloc** are pool allocators by design: `free()`
+  hands a block back to a thread cache / central free list / span, never to the
+  OS. Note that the CMake rule prefers `libtcmalloc_minimal`, which has no
+  background page-release thread.
+- **jemalloc** releases pages on its own without any help from the application. Its
+  decay-based purging `madvise(MADV_DONTNEED)`s dirty extents a few seconds after
+  they fall idle, so `VmRSS` collapses to 131 MB while `VmSize` stays at 805 MB —
+  the virtual mappings are kept for reuse and only the physical pages are dropped.
+  The price is the highest peak of the four (~18% above glibc).
+
+Reclaiming eagerly is not free. `malloc_trim()` walks every bin of the arena, so its
+cost scales with the number of free chunks, and during a bulk delete that list grows to
+the size of the working set:
+
+| Configuration | 500 000 SET | 500 000 DEL |
+| --- | --- | --- |
+| No pool + `malloc_trim` on every free | 21 s | **151 s** |
+| Custom pool | 17 s | 8 s |
+| tcmalloc | 17 s | 12 s |
+| jemalloc | 17 s | 11 s |
+
+So the three options trade off cleanly: glibc plus an explicit trim gives the lowest
+peak *and* near-total reclamation but a ~19x slower bulk delete; jemalloc gives 95%
+reclamation at full speed for a 18% higher peak; the pool allocators are fastest but
+never shrink.
+
+Peak footprint ranks glibc (643 MB) < tcmalloc (705 MB) < custom pool (715 MB) <
+jemalloc (758 MB), all within ~18% of each other. The custom pool uses
+**sub-octave size classes** — each power-of-two octave is split into 8 evenly
+spaced classes (≤12.5% internal fragmentation) — so a 1 KB value takes a 1152 B
+block instead of the 2048 B a pure power-of-two scheme would use (which
+previously pushed its peak to ~1132 MB).
+
+Container nodes are drawn from the slab **only when the pool is compiled in**:
+[memory/slab.hpp](memory/slab.hpp) resolves `KV_NODE_ALLOC` / `KV_NODE_FREE` to
+`memory::Slab<T>` under `ENABLE_MEMORY_POOL` and to `allocator::kv_malloc` /
+`allocator::kv_free` otherwise. The slab never unmaps its 4 KB pages, so routing
+nodes through plain `malloc` in a no-pool build both lowers the peak and stops
+~64 MB of permanently pinned pages from anchoring the top of the heap.
 
 ---
 
