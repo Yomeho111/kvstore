@@ -166,6 +166,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_TCMALLOC=ON
 cmake --build build
 ```
 
+```bash
+cd /home/mingfeng/kvstore && KV_PORT=8060 bash scripts/benchmark_compare.sh --no-build 2>&1 | tee /tmp/benchmark_compare.log
+```
+
 ### Build Artifacts
 
 After building, the following executables are produced in `build/`:

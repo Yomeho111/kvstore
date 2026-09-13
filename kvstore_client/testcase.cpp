@@ -434,6 +434,58 @@ static long long timer_verify_expired(redisContext *c, int step)
     return TIMER_STEP_KV;
 }
 
+// ---------------------------------------------------------------------------
+// Full-snapshot (SAVE) cost under a sustained write load: SET g_save_total
+// keys, sending a SAVE every g_save_interval writes. Requires a server started
+// with `mode = rdb`; SAVE is rejected in every other persistence mode.
+// ---------------------------------------------------------------------------
+static int g_save_total = 0;
+static int g_save_interval = 0;
+
+static std::string make_save_key(int i)
+{
+    return "skey" + std::to_string(i);
+}
+
+static std::string make_save_value(int i)
+{
+    return "sval" + std::to_string(i);
+}
+
+static long long testcase_save_interval(redisContext *c)
+{
+    const char *name = "resp-save-interval";
+    long long commands = 0;
+
+    for (int begin = 1; begin <= g_save_total; begin += BATCH_SIZE)
+    {
+        int end = std::min(begin + BATCH_SIZE - 1, g_save_total);
+
+        for (int i = begin; i <= end; ++i)
+        {
+            std::string key = make_save_key(i);
+            std::string value = make_save_value(i);
+            redisAppendCommand(c, "SET %b %b", key.data(), key.size(), value.data(), value.size());
+            commands++;
+
+            if (i % g_save_interval == 0)
+            {
+                redisAppendCommand(c, "SAVE");
+                commands++;
+            }
+        }
+
+        for (int i = begin; i <= end; ++i)
+        {
+            expect_status(c, name, "OK"); // SET
+            if (i % g_save_interval == 0)
+                expect_status(c, name, "OK"); // SAVE
+        }
+    }
+
+    return commands;
+}
+
 static long long testcase_timer_multi_step(redisContext *c)
 {
     // t0: seed the first batch.
@@ -498,7 +550,7 @@ static void repeat_testcase(redisContext *c, TestcaseFn func, const char *name)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-            "Usage: %s <ip> <port> <mode>\n"
+            "Usage: %s <ip> <port> <mode> [<writes> <save interval>]\n"
             "\n"
             "  0   basic SET/GET/overwrite/EXISTS/DEL sequence\n"
             "  1   mode 0 replayed 10k times, with throughput\n"
@@ -511,13 +563,15 @@ static void usage(const char *prog)
             "  8   GET and verify the pairs written by mode 7\n"
             "  9   multi-step 1s TTL expiration under sustained writes\n"
             "  10  SET the first half of the mode 7 pairs\n"
-            "  11  SET the second half of the mode 7 pairs\n",
+            "  11  SET the second half of the mode 7 pairs\n"
+            "  12  SET <writes> keys, one SAVE every <save interval> writes\n"
+            "      (needs a server in mode = rdb; both arguments are required)\n",
             prog, LARGE_VALUE_LEN, N, N, UNIQUE_KV_COUNT);
 }
 
 int main(int argc, char **argv)
 {
-    if (argc != 4)
+    if (argc != 4 && argc != 6)
     {
         usage(argv[0]);
         return -1;
@@ -525,6 +579,18 @@ int main(int argc, char **argv)
 
     uint16_t port = atoi(argv[2]);
     int mode = atoi(argv[3]);
+
+    if (argc == 6)
+    {
+        g_save_total = atoi(argv[4]);
+        g_save_interval = atoi(argv[5]);
+    }
+
+    if (mode == 12 && (g_save_total <= 0 || g_save_interval <= 0))
+    {
+        usage(argv[0]);
+        return -1;
+    }
 
     redisContext *c = resp_connect(argv[1], port);
 
@@ -565,6 +631,9 @@ int main(int argc, char **argv)
             break;
         case 11:
             run_testcase(c, testcase_set_unique_second_half, "resp-set-unique-second-half");
+            break;
+        case 12:
+            run_testcase(c, testcase_save_interval, "resp-save-interval");
             break;
         default:
             usage(argv[0]);

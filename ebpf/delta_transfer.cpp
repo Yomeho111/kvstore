@@ -194,7 +194,7 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    printf("delta transfer attached to pid %d\n", target_pid);
+    // printf("delta transfer attached to pid %d\n", target_pid);
 
     while (!exiting)
     {

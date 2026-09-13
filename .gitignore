@@ -10,6 +10,9 @@ out/
 # test suite runtime dirs (see scripts/test_suite.sh)
 .test-suite/
 
+# benchmark comparison runtime dirs (see scripts/benchmark_compare.sh)
+.benchmark-compare/
+
 # object / library files
 *.o
 *.obj
