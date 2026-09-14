@@ -46,7 +46,7 @@ REDIS_PORT=${REDIS_PORT:-6379}
 REQUESTS=${REQUESTS:-1000000}
 
 # <SAVE interval>:<writes> pairs for the snapshot phase.
-SAVE_PLAN=${SAVE_PLAN:-"1000000:2000000 100000:200000 10000:50000 1000:20000"}
+SAVE_PLAN=${SAVE_PLAN:-"1000000:2000000 100000:2000000 10000:2000000 1000:2000000"}
 
 PIPELINE_SWEEP=${PIPELINE_SWEEP:-"10 20 40 80 160"}
 PIPELINE_PERSIST=${PIPELINE_PERSIST:-none}
@@ -417,7 +417,9 @@ bench_save()
         printf '  %-12s %10s %10s %12s %10s %12s\n' \
             "$interval" "$writes" "$snapshots" "$commands" "$ms" "$qps"
 
+        sleep 60
         stop_server
+        sleep 5
         drop_runtime
     done
 }
