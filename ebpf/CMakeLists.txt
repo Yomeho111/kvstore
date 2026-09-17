@@ -84,11 +84,20 @@ find_package(BpfObject REQUIRED)
 bpf_object(delta_transfer delta_transfer.bpf.c delta.h)
 add_dependencies(delta_transfer_skel ebpf_libbpf ebpf_bpftool)
 
+# MpscQueue reaches slab.hpp -> allocator.h, so kv_malloc/kv_free come along.
+# ENABLE_MEMORY_POOL is deliberately left undefined here: the daemon is a separate
+# process, and without it the slab path compiles down to plain malloc/free.
 add_executable(delta_transfer
     delta_transfer.cpp
     cache_pool.cpp
     tcp_server.cpp
+    transfer_worker.cpp
+    ${PROJECT_SOURCE_DIR}/memory/allocator.cpp
 )
 
-target_include_directories(delta_transfer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(delta_transfer PRIVATE delta_transfer_skel)
+target_include_directories(delta_transfer PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${PROJECT_SOURCE_DIR}/memory
+    ${PROJECT_SOURCE_DIR}/base_component/lockfree_queue
+)
+target_link_libraries(delta_transfer PRIVATE delta_transfer_skel Threads::Threads)
