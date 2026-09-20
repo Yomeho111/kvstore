@@ -10,6 +10,10 @@
 #include "hiredis.h"
 #include "kv_log.h"
 
+#ifndef HAVE_EBPF_TRANSFER
+#include "transfer_worker.h"
+#endif
+
 #define RESP_RECV_BUF_SIZE 32768
 #define RESP_MAX_ARGS 64
 
@@ -107,11 +111,44 @@ namespace hpc_coroutine
             close(fd);
             return;
         }
+
+#ifndef HAVE_EBPF_TRANSFER
+        struct sockaddr_in peer_addr{};
+        socklen_t peer_addr_len = sizeof(peer_addr);
+        if (getpeername(fd, reinterpret_cast<struct sockaddr *>(&peer_addr), &peer_addr_len) < 0)
+        {
+            KV_ERROR("getpeername");
+            redisReaderFree(reader);
+            close(fd);
+            allocator::kv_free(buf);
+            return;
+        }
+        const __u64 peer_addr_key = make_addr_port_key(
+            peer_addr.sin_addr.s_addr, ntohs(peer_addr.sin_port));
+#endif
+
         while (1)
         {
             int n = recv(fd, buf, RESP_RECV_BUF_SIZE, 0);
             if (n <= 0)
                 break;
+
+#ifndef HAVE_EBPF_TRANSFER
+            size_t offset = 0;
+            while (offset < static_cast<size_t>(n))
+            {
+                auto slice = std::make_unique_for_overwrite<SliceInfo>();
+                const size_t remaining = static_cast<size_t>(n) - offset;
+                const size_t slice_size = remaining < sizeof(slice->buf) ? remaining : sizeof(slice->buf);
+
+                slice->addr_sport = peer_addr_key;
+                slice->size = slice_size;
+                memcpy(slice->buf, buf + offset, slice_size);
+
+                delta::TransferWorker::instance().submit_slice(std::move(slice));
+                offset += slice_size;
+            }
+#endif
 
             if (redisReaderFeed(reader, buf, n) != REDIS_OK)
                 break;

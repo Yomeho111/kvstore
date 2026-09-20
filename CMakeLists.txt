@@ -31,6 +31,10 @@ option(ENABLE_JEMALLOC "Link with jemalloc" OFF)
 option(ENABLE_CPP_EXCEPTIONS "Enable C++ exceptions" OFF)
 option(BUILD_EBPF_TRANSFER "Build the standalone eBPF delta transfer daemon" OFF)
 
+if(BUILD_EBPF_TRANSFER)
+    add_compile_definitions(HAVE_EBPF_TRANSFER)
+endif()
+
 string(TOUPPER "${NETWORK}" NETWORK)
 string(TOUPPER "${ENGINE}" ENGINE)
 
@@ -205,6 +209,18 @@ target_sources(kvstore_backend PRIVATE
         network/my_coroutine/my_coroutine/hpc_socket.cpp
         network/my_coroutine/my_coroutine/utils.cpp
     )
+
+if(NOT BUILD_EBPF_TRANSFER)
+    target_sources(kvstore_backend PRIVATE
+        ebpf/cache_pool.cpp
+        ebpf/tcp_server.cpp
+        ebpf/transfer_worker.cpp
+    )
+    target_include_directories(kvstore_backend PRIVATE
+        ${PROJECT_SOURCE_DIR}/ebpf
+    )
+endif()
+
 target_include_directories(kvstore_backend PUBLIC
         ${PROJECT_SOURCE_DIR}/network/my_coroutine
         ${PROJECT_SOURCE_DIR}/network/my_coroutine/my_coroutine
