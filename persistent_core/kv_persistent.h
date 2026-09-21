@@ -8,6 +8,7 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <memory>
 #include <charconv>
 #include <condition_variable>
 #include "engine_interface_base.h"
@@ -120,7 +121,19 @@ namespace kv_persistent
 
     class StoreEngine
     {
-        using CommandType = uint16_t;
+
+        struct Node
+        {
+            uint16_t command_;
+            string key_;
+            string value_;
+
+            Node(uint16_t command, const string &key, const string &value) : command_(command), key_(key), value_(value) {}
+
+            ~Node() = default;
+        };
+
+        using node_t = std::unique_ptr<Node>;
 
         // io_uring pipeline depth: up to this many record writes are kept in flight.
         static constexpr unsigned AOF_DEPTH = 64;
@@ -128,7 +141,7 @@ namespace kv_persistent
     public:
         static StoreEngine &instance();
 
-        int dump_record(CommandType command, const string &key, const string &value);
+        int dump_record(uint16_t command, const string &key, const string &value);
 
         int load_record(kv_engine::EngineInterfaceBase *engine);
 
@@ -163,6 +176,8 @@ namespace kv_persistent
 
         int _flush();
 
+        int _dump_record(uint16_t command, const string &key, const string &value);
+
         int _make_up_dump_buffer(const ConstDataField &command_data, const DataField &buffer_data, const string &key, const string &value, size_t resp_size);
 
         bool ring_ready_ = false;
@@ -188,7 +203,7 @@ namespace kv_persistent
 
         std::atomic<bool> is_running_{false};
 
-        base_component::MpscQueue<int> old_fd_que_;
+        base_component::MpscQueue<node_t> node_que_;
 
         struct io_uring ring_;
     };

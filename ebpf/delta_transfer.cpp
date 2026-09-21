@@ -11,8 +11,7 @@
 #include <signal.h>
 #include <dirent.h>
 
-#include "cache_pool.h"
-#include "tcp_server.h"
+#include "transfer_worker.h"
 
 #include "delta_transfer.skel.h"
 
@@ -40,50 +39,18 @@ static int trans_sample_event(void *ctx, void *data, size_t data_size)
         return 0;
 
     struct SliceInfo *info = (struct SliceInfo *)data;
-    auto &cache_pool = delta::CachePoolManager::instance();
-    auto &server = delta::TransferServer::instance();
-
-    __u64 addr_key = info->addr_sport;
     size_t size = info->size;
 
     if (size == 0 || size > INFO_BUFFER_SIZE)
         return 0;
 
-    char *buffer = info->buf;
+    auto slice = std::make_unique_for_overwrite<SliceInfo>();
 
-    int status_machine = cache_pool.verify_slave(buffer, size, addr_key);
-    if (status_machine == 0)
-    {
-        if (cache_pool.cache_buffer(buffer, size) < 0)
-        {
-            perror("cache buffer error");
-            return -1;
-        }
-        if (server.broadcast_buffer(buffer, size) < 0)
-        {
-            perror("broadcast error");
-            return -2;
-        }
-    }
-    else if (status_machine == 2)
-    {
-        struct Node *node = nullptr;
-        size_t offset = 0;
-        __u64 target_addr_port;
+    slice->addr_sport = info->addr_sport;
+    slice->size = size;
+    memcpy(slice->buf, info->buf, size);
 
-        cache_pool.get_registered_start(addr_key, &node, &offset, &target_addr_port);
-        if (target_addr_port == 0 || server.connect(target_addr_port, node, offset) < 0)
-        {
-            perror("connect error");
-            return -3;
-        }
-
-        if (node)
-            node->fd_start_count--;
-
-        cache_pool.purge_cached_node();
-        cache_pool.close_fd(addr_key);
-    }
+    delta::TransferWorker::instance().submit_slice(std::move(slice));
 
     return 0;
 }

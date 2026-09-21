@@ -166,20 +166,21 @@ namespace kv_persistent
             {
                 while (is_running_.load(std::memory_order_acquire))
                 {
-                    int old_fd{-1};
+                    node_t node;
                     {
                         std::unique_lock lk{mtx_};
-                        cv_.wait(lk, [this, &old_fd]
-                                 { return old_fd_que_.dequeue(old_fd) || !is_running_.load(std::memory_order_acquire); });
+                        cv_.wait(lk, [this, &node]
+                                 { return node_que_.dequeue(node) || !is_running_.load(std::memory_order_acquire); });
                     }
+
+                    if (!node)
+                        break;
+
                     do
                     {
-                        if (old_fd >= 0)
-                        {
-                            ::fdatasync(old_fd);
-                            ::close(old_fd);
-                        }
-                    } while (old_fd_que_.dequeue(old_fd));
+                        if (_dump_record(node->command_, node->key_, node->value_) < 0)
+                            KV_ERROR("StoreEngine dump record failed");
+                    } while (node_que_.dequeue(node));
                 }
             });
 
@@ -198,7 +199,6 @@ namespace kv_persistent
 
     StoreEngine::~StoreEngine()
     {
-        _close_file();
 
         is_running_.store(false, std::memory_order_release);
 
@@ -206,6 +206,8 @@ namespace kv_persistent
 
         if (sync_thr_.joinable())
             sync_thr_.join();
+
+        _close_file();
 
         if (ring_ready_)
         {
@@ -223,7 +225,18 @@ namespace kv_persistent
         }
     }
 
-    int StoreEngine::dump_record(CommandType command, const string &key, const string &value)
+    int StoreEngine::dump_record(uint16_t command, const string &key, const string &value)
+    {
+        auto node = std::make_unique<Node>(command, key, value);
+
+        node_que_.enqueue(std::move(node));
+
+        cv_.notify_one();
+
+        return 0;
+    }
+
+    int StoreEngine::_dump_record(uint16_t command, const string &key, const string &value)
     {
         size_t key_len = key.size();
         if (!(command == kv_protocal::KVS_SET || command == kv_protocal::KVS_DEL || command == kv_protocal::KVS_MOD) || key_len == 0)
@@ -651,9 +664,9 @@ namespace kv_persistent
             if (_commit_io_uring(0))
                 return -2;
 
-            int old_fd = std::exchange(fd_, -1);
-            old_fd_que_.enqueue(old_fd);
-            cv_.notify_one();
+            ::fdatasync(fd_);
+            ::close(fd_);
+            fd_ = -1;
         }
 
         file_size = 0;
