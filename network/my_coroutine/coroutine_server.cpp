@@ -113,18 +113,23 @@ namespace hpc_coroutine
         }
 
 #ifndef HAVE_EBPF_TRANSFER
+
         struct sockaddr_in peer_addr{};
         socklen_t peer_addr_len = sizeof(peer_addr);
-        if (getpeername(fd, reinterpret_cast<struct sockaddr *>(&peer_addr), &peer_addr_len) < 0)
+        __u64 peer_addr_key;
+        if (replicate::g_is_master)
         {
-            KV_ERROR("getpeername");
-            redisReaderFree(reader);
-            close(fd);
-            allocator::kv_free(buf);
-            return;
+            if (getpeername(fd, reinterpret_cast<struct sockaddr *>(&peer_addr), &peer_addr_len) < 0)
+            {
+                KV_ERROR("getpeername");
+                redisReaderFree(reader);
+                close(fd);
+                allocator::kv_free(buf);
+                return;
+            }
+            peer_addr_key = make_addr_port_key(
+                peer_addr.sin_addr.s_addr, ntohs(peer_addr.sin_port));
         }
-        const __u64 peer_addr_key = make_addr_port_key(
-            peer_addr.sin_addr.s_addr, ntohs(peer_addr.sin_port));
 #endif
 
         while (1)
@@ -134,19 +139,22 @@ namespace hpc_coroutine
                 break;
 
 #ifndef HAVE_EBPF_TRANSFER
-            size_t offset = 0;
-            while (offset < static_cast<size_t>(n))
+            if (replicate::g_is_master)
             {
-                auto slice = std::make_unique_for_overwrite<SliceInfo>();
-                const size_t remaining = static_cast<size_t>(n) - offset;
-                const size_t slice_size = remaining < sizeof(slice->buf) ? remaining : sizeof(slice->buf);
+                size_t offset = 0;
+                while (offset < static_cast<size_t>(n))
+                {
+                    auto slice = std::make_unique_for_overwrite<SliceInfo>();
+                    const size_t remaining = static_cast<size_t>(n) - offset;
+                    const size_t slice_size = remaining < sizeof(slice->buf) ? remaining : sizeof(slice->buf);
 
-                slice->addr_sport = peer_addr_key;
-                slice->size = slice_size;
-                memcpy(slice->buf, buf + offset, slice_size);
+                    slice->addr_sport = peer_addr_key;
+                    slice->size = slice_size;
+                    memcpy(slice->buf, buf + offset, slice_size);
 
-                delta::TransferWorker::instance().submit_slice(std::move(slice));
-                offset += slice_size;
+                    delta::TransferWorker::instance().submit_slice(std::move(slice));
+                    offset += slice_size;
+                }
             }
 #endif
 
