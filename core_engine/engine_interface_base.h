@@ -25,6 +25,10 @@ namespace kv_engine
 
         virtual int exist(const char *key, size_t key_len) = 0;
 
+#ifdef ENABLE_RAG
+        virtual int vsearch(const char *vector, size_t vec_len, int K, char **response) = 0;
+#endif
+
         virtual int init() noexcept = 0;
     };
 } // namespace kv_engine

@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <mutex>
 #include <filesystem>
+#include <vector>
 #include "engine_interface_base.h"
 #include "allocator.h"
 #include "kv_persistent.h"
@@ -19,9 +20,35 @@
 #include "slab.hpp"
 #include "timer.h"
 
+#ifdef ENABLE_RAG
+#include <cmath>
+#include "vectordb_tool.h"
+#endif
+
 namespace kv_engine
 {
     namespace fs = std::filesystem;
+
+#ifdef ENABLE_RAG
+    // the struct for vector database search
+    struct Vnode
+    {
+        float distance;
+        const string *key_ptr;
+
+        bool operator<(const Vnode &other) const
+        {
+            return distance < other.distance;
+        }
+
+        bool operator>(const Vnode &other) const
+        {
+            return distance > other.distance;
+        }
+    };
+
+#endif
+
     template <typename RealEngine>
     class EngineInterface : public EngineInterfaceBase
     {
@@ -93,6 +120,72 @@ namespace kv_engine
 
             return node->value.size() + 2;
         }
+
+#ifdef ENABLE_RAG
+        int vsearch(const char *vector, size_t vec_len, int K, char **response) override
+        {
+            if (!vector || vec_len == 0 || K <= 0)
+                return -1;
+
+            std::lock_guard lk{lock_};
+            auto &base = static_cast<RealEngine *>(this)->get_base();
+            size_t size = base.size();
+
+            if (size == 0)
+                return 0;
+            std::vector<Vnode, allocator::MyAllocator<Vnode>> node_vec;
+
+            node_vec.reserve(size);
+
+            for (auto it = this->begin(); it != this->end(); ++it)
+            {
+                auto *node = *it;
+                float distance = vectordb::VectorDbEngine::calculate_distance(vector, vec_len, node->value.c_str(), node->value.size());
+                if (std::fabs(distance - vectordb::INVALID_DISTANCE) < 1e-6)
+                    continue;
+                node_vec.emplace_back(distance, &node->key);
+            }
+
+            const size_t candidate_count = node_vec.size();
+            if (candidate_count == 0)
+                return 0;
+
+            const size_t result_count = std::min(static_cast<size_t>(K), candidate_count);
+            if (result_count < candidate_count)
+            {
+                int pivot = vectordb::VectorDbEngine::get_top_k(node_vec, K);
+                if (pivot != K - 1)
+                    return -2;
+            }
+
+            size_t response_size = result_count - 1;
+            for (size_t index = 0; index < result_count; index++)
+            {
+                response_size += node_vec[index].key_ptr->size();
+            }
+
+            *response = (char *)allocator::kv_malloc(response_size + 2);
+            if (*response == nullptr)
+                return -3;
+
+            char *cur = *response;
+            size_t index = 0;
+            for (; index + 1 < result_count; index++)
+            {
+                memcpy(cur, node_vec[index].key_ptr->c_str(), node_vec[index].key_ptr->size());
+                cur += node_vec[index].key_ptr->size();
+                *cur = ',';
+                cur++;
+            }
+
+            memcpy(cur, node_vec[index].key_ptr->c_str(), node_vec[index].key_ptr->size());
+            cur += node_vec[index].key_ptr->size();
+
+            memcpy(cur, "\r\n", 2);
+
+            return response_size + 2;
+        }
+#endif
 
         int modify(const char *key, size_t key_len, const char *value, size_t val_len, struct kv_protocal::TimeoutSpec *timeout = nullptr, bool to_disk = true) override
         {

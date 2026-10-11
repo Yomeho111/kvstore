@@ -10,6 +10,7 @@
 
 namespace kv_protocal
 {
+    // The number of char of each command should not exceed 8
     inline constexpr const char *command_str[] = {
         "START",
         "SET",
@@ -24,6 +25,9 @@ namespace kv_protocal
         "EXIT",
         "SYNC",
         "SYNCFIN",
+#ifdef ENABLE_RAG
+        "VSEARCH",
+#endif
         "END",
         "INVALID",
     };
@@ -43,6 +47,9 @@ namespace kv_protocal
         KVS_EXIT,
         KVS_SYNC,
         KVS_SYNCFIN,
+#ifdef ENABLE_RAG
+        KVS_VSEARCH,
+#endif
         KVS_END,
         KVS_INVALID,
     };

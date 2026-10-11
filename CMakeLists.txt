@@ -29,6 +29,7 @@ option(ENABLE_MEMORY_POOL "Enable custom memory pool allocator" OFF)
 option(ENABLE_TCMALLOC "Link with tcmalloc" OFF)
 option(ENABLE_JEMALLOC "Link with jemalloc" OFF)
 option(ENABLE_CPP_EXCEPTIONS "Enable C++ exceptions" OFF)
+option(ENABLE_RAG "Enable vector database search" OFF)
 option(BUILD_EBPF_TRANSFER "Build the standalone eBPF delta transfer daemon" OFF)
 
 if(BUILD_EBPF_TRANSFER)
@@ -132,6 +133,16 @@ target_compile_definitions(kvstore_core
 
 if(ENABLE_MEMORY_POOL)
     target_compile_definitions(kvstore_core PUBLIC ENABLE_MEMORY_POOL)
+endif()
+
+if(ENABLE_RAG)
+    target_sources(kvstore_core PRIVATE
+        vector_database/vectordb_tool.cpp
+    )
+    target_include_directories(kvstore_core PUBLIC
+        ${PROJECT_SOURCE_DIR}/vector_database
+    )
+    target_compile_definitions(kvstore_core PUBLIC ENABLE_RAG)
 endif()
 
 # The persistence layer uses io_uring for durable writes, so kvstore_core always needs liburing.

@@ -25,6 +25,10 @@
 #include "kv_log.h"
 #include "thread_pool.hpp"
 
+#ifdef ENABLE_RAG
+#include "vectordb_tool.h"
+#endif
+
 // #define MAX_BODY_SIZE 4096
 #define MAX_TOKEN_SIZE 2
 #define BUFFER_SIZE 128
@@ -71,7 +75,9 @@ namespace kv_protocal
     inline constexpr const uint64_t KV_SAVE = cmd_tag("SAVE");
     inline constexpr const uint64_t KV_SYNC = cmd_tag("SYNC");
     inline constexpr const uint64_t KV_SYNCFIN = cmd_tag("SYNCFIN");
-
+#ifdef ENABLE_RAG
+    inline constexpr const uint64_t KV_VSEARCH = cmd_tag("VSEARCH");
+#endif
     inline constexpr const char *SYNCFIN_RESP = "*1\r\n$7\r\nSYNCFIN\r\n";
 
     // Where a command's reply goes. A replica applies commands without
@@ -282,6 +288,15 @@ namespace kv_protocal
                     // Redis SET overwrites an existing key. The engine's set()
                     // refuses to replace one (returns > 0), so fall back to modify().
                     TimeoutSpec *tp = has_expiry ? &ts : nullptr;
+
+#ifdef ENABLE_RAG
+                    // Verify the vector value
+                    if (vectordb::VectorDbEngine::transform_vector(argv[2], argvlen[2]) < 0)
+                    {
+                        out += "-ERR invalid vector data\r\n";
+                        return 0;
+                    }
+#endif
                     int ret = _engine.set(argv[1], argvlen[1], argv[2], argvlen[2], tp);
                     if (ret > 0)
                         ret = _engine.modify(argv[1], argvlen[1], argv[2], argvlen[2], tp);
@@ -523,6 +538,48 @@ namespace kv_protocal
                 }
                 case KV_SYNCFIN:
                     return 0;
+#ifdef ENABLE_RAG
+                case KV_VSEARCH:
+                {
+                    if (argc < 3)
+                    {
+                        out += "-ERR wrong number of arguments for 'vsearch' command\r\n";
+                        return 0;
+                    }
+
+                    long long K = 0;
+                    if (!_resp_to_ll(argv[2], argvlen[2], K) || K <= 0 || K > 65535)
+                    {
+                        out += "-ERR invalid K\r\n";
+                        return 0;
+                    }
+
+                    if (vectordb::VectorDbEngine::transform_vector(argv[1], argvlen[1]) < 0)
+                    {
+                        out += "-ERR invalid vector data\r\n";
+                        return 0;
+                    }
+
+                    int top_k = static_cast<int>(K);
+
+                    char *value = nullptr;
+                    int ret = _engine.vsearch(argv[1], argvlen[1], top_k, &value);
+                    if (ret > 0)
+                    {
+                        size_t vlen = static_cast<size_t>(ret) - 2;
+                        char hdr[32];
+                        int n = snprintf(hdr, sizeof(hdr), "$%zu\r\n", vlen);
+                        out.append(hdr, n);
+                        out.append(value, ret);
+                        allocator::kv_free(value);
+                    }
+                    else if (ret == 0)
+                        out += "$-1\r\n"; // nil
+                    else
+                        out += "-ERR vsearch failed\r\n";
+                    return 0;
+                }
+#endif
                 default:
                     break;
             }
