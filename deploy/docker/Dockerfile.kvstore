@@ -1,0 +1,66 @@
+# syntax=docker/dockerfile:1
+ARG UBUNTU_VERSION=24.04
+
+FROM ubuntu:${UBUNTU_VERSION} AS builder
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        git \
+        libibverbs-dev \
+        librdmacm-dev \
+        liburing-dev \
+        linux-libc-dev \
+        nasm \
+        ninja-build \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY CMakeLists.txt ./
+COPY src/ ./src/
+COPY include/ ./include/
+COPY third_party/ ./third_party/
+
+ARG ENABLE_RAG=OFF
+ARG BUILD_JOBS=2
+RUN cmake -S . -B /build/output -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+        -DCMAKE_INSTALL_RPATH=/usr/local/lib \
+        -DENGINE=RBTREE_ENGINE \
+        -DKVSTORE_PORT_NUM=1 \
+        -DENABLE_MEMORY_POOL=ON \
+        -DENABLE_RAG=${ENABLE_RAG} \
+        -DBUILD_EBPF_TRANSFER=OFF \
+    && cmake --build /build/output --target kvstore --parallel ${BUILD_JOBS} \
+    && mkdir -p /artifacts/lib \
+    && cp /build/output/kvstore /artifacts/kvstore \
+    && cp -a /build/output/third_party/isa-l/libisal.so* /artifacts/lib/ \
+    && strip /artifacts/kvstore
+
+FROM ubuntu:${UBUNTU_VERSION} AS runtime
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libgcc-s1 \
+        libibverbs1 \
+        librdmacm1 \
+        libstdc++6 \
+        liburing2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app \
+    && mkdir -p /data /etc/kvstore \
+    && chown app:app /data
+
+COPY --from=builder /artifacts/kvstore /usr/local/bin/kvstore
+COPY --from=builder /artifacts/lib/ /usr/local/lib/
+ENV LD_LIBRARY_PATH=/usr/local/lib
+WORKDIR /data
+USER 10001:10001
+EXPOSE 8050 8060
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/local/bin/kvstore"]
+CMD ["--config", "/etc/kvstore/kvstore.ini"]

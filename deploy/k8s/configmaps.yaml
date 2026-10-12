@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kvstore-config
+  namespace: vector-stack
+data:
+  kvstore.ini: |
+    [server]
+    port = 8050
+    log_level = info
+
+    [persistence]
+    mode = aof
+
+    [replication]
+    role = standalone
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vectordb-config
+  namespace: vector-stack
+data:
+  kvstore.ini: |
+    [server]
+    port = 8060
+    log_level = info
+
+    [persistence]
+    mode = aof
+
+    [replication]
+    role = standalone
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vectordb-service-config
+  namespace: vector-stack
+data:
+  model-name: Alibaba-NLP/gte-multilingual-base
+  server_config.json: |
+    {
+      "kvstore": {
+        "host": "kvstore",
+        "port": 8050,
+        "max_connection": 20,
+        "timeout": 5
+      },
+      "vectordb": {
+        "host": "vectordb",
+        "port": 8060,
+        "max_connection": 20,
+        "timeout": 5
+      }
+    }

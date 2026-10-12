@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vectordb-service"
+version = "0.1.0"
+description = "Async gRPC service for the kvstore vector database"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "grpcio>=1.84,<2",
+    "protobuf>=7.35.1,<8",
+    "redis>=5.2,<8",
+]
+
+[project.optional-dependencies]
+embedding = [
+    "sentence-transformers>=5.1,<6",
+    "torch>=2.5,<3",
+]
+
+[dependency-groups]
+dev = [
+    "grpcio-tools>=1.84,<2",
+    "pytest>=8.3,<10",
+    "pytest-asyncio>=1,<2",
+]
+
+[project.scripts]
+vectordb-server = "vectordb_service.run:main"
+vectordb-generate-proto = "vectordb_service.generate:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vectordb_service"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/", "proto/", "tests/", "pyproject.toml", "README.md", "uv.lock"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]

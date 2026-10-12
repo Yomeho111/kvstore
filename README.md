@@ -93,19 +93,27 @@ replay every record in order with to_disk=false`.
 
 ## Repository Layout
 
+C/C++ implementations live in `src/` and project headers live in `include/`,
+with the original module hierarchy preserved under both directories. Vendored
+dependencies stay in `third_party/`; scripts, configuration, and Python services
+keep their existing locations. The eBPF CMake entry point, coroutine Makefile,
+and RDMA benchmark Makefile live beside their implementations in `src/`.
+
 | Path | Description |
 | --- | --- |
-| [main.cpp](main.cpp) | Server entry point; arg parsing for master/slave/replication. |
+| [src/main.cpp](src/main.cpp) | Server entry point; arg parsing for master/slave/replication. |
 | [CMakeLists.txt](CMakeLists.txt) | Build configuration and feature toggles. |
-| [core_engine/](core_engine/) | Storage engines and the abstract `EngineInterface`. |
-| [base_component/](base_component/) | Data structures: `rbtree`, `hash`, `skiplist`, `array`. |
-| [persistent_core/](persistent_core/) | `StoreEngine` — append-only write-ahead log + recovery. |
-| [network/](network/) | Network backend: `my_coroutine/`. |
-| [protocal/](protocal/) | Wire protocol: headers (`kv_header.h`) and codec (`kv_protocal.hpp`). |
-| [replication/](replication/) | `RepManager` — master/slave replication. |
-| [timer/](timer/) | Timer manager for TTL / scheduled key expiration. |
-| [memory/](memory/) | Custom memory pool allocator (thread cache, central pool, page allocator, slab). |
-| [kvstore_client/](kvstore_client/) | `KvClient` library, interactive CLI, and test harness. |
+| [src/core_engine/](src/core_engine/), [include/core_engine/](include/core_engine/) | Storage engines and the abstract `EngineInterface`. |
+| [include/base_component/](include/base_component/) | Data structures: `rbtree`, `hash`, `skiplist`, `array`. |
+| [src/persistent_core/](src/persistent_core/), [include/persistent_core/](include/persistent_core/) | `StoreEngine` — append-only write-ahead log + recovery. |
+| [src/network/](src/network/), [include/network/](include/network/) | Network backend: `my_coroutine/`. |
+| [include/protocal/](include/protocal/) | Wire protocol: headers (`kv_header.h`) and codec (`kv_protocal.hpp`). |
+| [src/replicate/](src/replicate/), [include/replicate/](include/replicate/) | Master/slave replication. |
+| [src/timer/](src/timer/), [include/timer/](include/timer/) | Timer manager for TTL / scheduled key expiration. |
+| [src/memory/](src/memory/), [include/memory/](include/memory/) | Custom memory pool allocator (thread cache, central pool, page allocator, slab). |
+| [src/kvstore_client/](src/kvstore_client/), [include/kvstore_client/](include/kvstore_client/) | `KvClient` library, interactive CLI, and test harness. |
+| [src/vector_database/](src/vector_database/), [include/vector_database/](include/vector_database/) | Vector validation, distance calculation, and Top-K selection (`ENABLE_RAG`). |
+| [src/ebpf/](src/ebpf/), [include/ebpf/](include/ebpf/) | Transfer workers and the standalone eBPF daemon, configured by [src/ebpf/CMakeLists.txt](src/ebpf/CMakeLists.txt). |
 
 ---
 
@@ -297,7 +305,7 @@ MOD token xyz 2h
 
 ## Wire Protocol
 
-The protocol is a compact binary framing defined in [protocal/kv_header.h](protocal/kv_header.h).
+The protocol is a compact binary framing defined in [include/protocal/kv_header.h](include/protocal/kv_header.h).
 Requests and responses can be **batched** — a single round trip may carry multiple operations.
 
 **Request framing**
@@ -325,7 +333,7 @@ KVS_EXIST, KVS_REPR, KVS_RESP, KVS_END, KVS_INVALID
 
 ## Persistence Format
 
-The persistence layer ([persistent_core/](persistent_core/)) is an **append-only
+The persistence layer ([src/persistent_core/](src/persistent_core/)) is an **append-only
 write-ahead log**. Records are flushed to disk **before** the server responds to the client,
 giving write-ahead durability semantics.
 
@@ -348,18 +356,18 @@ is append-only with no snapshots or compaction.
 
 ## Component Guide
 
-- **Engine interface** — [core_engine/engine_interface.hpp](core_engine/engine_interface.hpp)
+- **Engine interface** — [include/core_engine/engine_interface.hpp](include/core_engine/engine_interface.hpp)
   defines the abstract API: `set`, `get`, `modify`, `del`, `exist`, `init`. All engines are
   thread-safe via an internal `SpinLock`.
-- **Red-Black tree** — [base_component/rbtree/rbtree.hpp](base_component/rbtree/rbtree.hpp)
+- **Red-Black tree** — [include/base_component/rbtree/rbtree.hpp](include/base_component/rbtree/rbtree.hpp)
   provides ordered O(log n) operations, with nodes allocated from a slab allocator.
 - **Network backends** — 
-  [network/my_coroutine/](network/my_coroutine/) (stackful coroutines).
-- **Memory pool** — [memory/](memory/) implements a tcmalloc-style allocator:
+  [src/network/my_coroutine/](src/network/my_coroutine/) (stackful coroutines).
+- **Memory pool** — [src/memory/](src/memory/) implements a tcmalloc-style allocator:
   `thread_cache` → `central_pool` → `page_allocator`, with a `slab` for fixed-size objects.
   Enabled with `-DENABLE_MEMORY_POOL=ON`.
-- **Timer** — [timer/timer.cpp](timer/timer.cpp) schedules TTL-based key deletions.
-- **Replication** — [replication/rep_manager.cpp](replication/rep_manager.cpp) ships write
+- **Timer** — [src/timer/timer.cpp](src/timer/timer.cpp) schedules TTL-based key deletions.
+- **Replication** — [src/replicate/replicate.cpp](src/replicate/replicate.cpp) ships write
   records from master to slave using a ring buffer.
 
 ---
@@ -432,7 +440,7 @@ kernel:
   `MMAP_THRESHOLD` (128 KB), so it lives in the `brk` heap, which only shrinks when the
   top of the heap is contiguously free. The no-pool build therefore calls
   `malloc_trim(0)` from `MyAllocator::deallocate` after every `free()`
-  ([memory/allocator.h](memory/allocator.h)), and with that in place resident memory
+  ([include/memory/allocator.h](include/memory/allocator.h)), and with that in place resident memory
   returns to 93.25 MB against a 93.03 MB baseline — effectively the entire working set
   is given back. `VmSize` settles at 216 MB rather than the original 97 MB because the
   per-thread arenas stay mapped after `MADV_DONTNEED`.
@@ -470,7 +478,7 @@ block instead of the 2048 B a pure power-of-two scheme would use (which
 previously pushed its peak to ~1132 MB).
 
 Container nodes are drawn from the slab **only when the pool is compiled in**:
-[memory/slab.hpp](memory/slab.hpp) resolves `KV_NODE_ALLOC` / `KV_NODE_FREE` to
+[include/memory/slab.hpp](include/memory/slab.hpp) resolves `KV_NODE_ALLOC` / `KV_NODE_FREE` to
 `memory::Slab<T>` under `ENABLE_MEMORY_POOL` and to `allocator::kv_malloc` /
 `allocator::kv_free` otherwise. The slab never unmaps its 4 KB pages, so routing
 nodes through plain `malloc` in a no-pool build both lowers the peak and stops

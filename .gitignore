@@ -39,3 +39,108 @@ app
 server
 client
 multi_port
+
+# =========================
+# Python bytecode
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# =========================
+# Build / Distribution
+# =========================
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# =========================
+# Testing / Coverage
+# =========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+test-results/
+
+# =========================
+# Type checking / Linting
+# =========================
+.mypy_cache/
+.pyright/
+.ruff_cache/
+.pytype/
+
+# =========================
+# Jupyter Notebook
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# IDE / Editor
+# =========================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# =========================
+# OS generated files
+# =========================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# =========================
+# Logs / Temporary files
+# =========================
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# =========================
+# Environment / Secrets
+# =========================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# =========================
+# gRPC / Protobuf generated
+# =========================
+*_pb2.py
+*_pb2.pyi
+*_pb2_grpc.py
+
+# =========================
+# Local databases
+# =========================
+*.sqlite
+*.sqlite3
+*.db
+
+# =========================
+# Profiling
+# =========================
+*.prof
+*.pstats
