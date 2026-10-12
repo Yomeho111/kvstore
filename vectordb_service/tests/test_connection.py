@@ -36,10 +36,14 @@ def test_invalid_vector_dimension():
 async def test_insert_vector(redis_client):
     async with connections.VectorDbConnectionPool() as database:
         assert await database.insert_vector("uuid-one", [1.0] * 768) is True
-    redis_client.set.assert_awaited_once_with("uuid-one", connections.encode_vector([1.0] * 768))
+    redis_client.set.assert_awaited_once_with(
+        "uuid-one", connections.encode_vector([1.0] * 768)
+    )
 
 
-@pytest.mark.parametrize("reply,expected", [("uuid-one,uuid-two", ["uuid-one", "uuid-two"]), (None, [])])
+@pytest.mark.parametrize(
+    "reply,expected", [("uuid-one,uuid-two", ["uuid-one", "uuid-two"]), (None, [])]
+)
 async def test_search_result_strings(redis_client, reply, expected):
     redis_client.execute_command.return_value = reply
     async with connections.VectorDbConnectionPool() as database:
@@ -59,7 +63,10 @@ async def test_plain_kv_returns_text_or_none(redis_client, value):
     redis_client.get.assert_awaited_once_with("uuid-one")
 
 
-@pytest.mark.parametrize("connection_class", [connections.VectorDbConnectionPool, connections.KvstoreConnectionPool])
+@pytest.mark.parametrize(
+    "connection_class",
+    [connections.VectorDbConnectionPool, connections.KvstoreConnectionPool],
+)
 @pytest.mark.parametrize("fail", [False, True])
 async def test_pool_closes_on_context_exit(connection_class, fail):
     database = connection_class()

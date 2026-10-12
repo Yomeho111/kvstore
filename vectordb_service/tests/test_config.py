@@ -71,7 +71,9 @@ def test_json_only_configuration(configuration, tmp_path, monkeypatch):
     settings["kvstore"].update(host="kv.example", port=9300)
     settings["vectordb"].update(host="vectors.example", port=9400)
     json_path.write_text(json.dumps(settings), encoding="utf-8")
-    monkeypatch.setattr(run, "__file__", str(tmp_path / "installed" / "package" / "run.py"))
+    monkeypatch.setattr(
+        run, "__file__", str(tmp_path / "installed" / "package" / "run.py")
+    )
     parsed = run.load_config(server_config_path=json_path)
     assert parsed["kvstore_host"] == "kv.example"
     assert parsed["vectordb_port"] == 9400
@@ -80,14 +82,21 @@ def test_json_only_configuration(configuration, tmp_path, monkeypatch):
 @pytest.mark.parametrize("port", ["0", "65536", "abc", ""])
 def test_invalid_ini_port(configuration, port):
     config_dir, json_path, _ = configuration
-    (config_dir / "kvstore.ini").write_text(f"[server]\nport={port}\n", encoding="utf-8")
+    (config_dir / "kvstore.ini").write_text(
+        f"[server]\nport={port}\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="port"):
         run.load_config(config_dir, json_path)
 
 
 @pytest.mark.parametrize(
     "setting,value",
-    [("max_connection", 0), ("max_connection", True), ("timeout", -1), ("timeout", "5")],
+    [
+        ("max_connection", 0),
+        ("max_connection", True),
+        ("timeout", -1),
+        ("timeout", "5"),
+    ],
 )
 def test_invalid_pool_settings(configuration, setting, value):
     config_dir, json_path, settings = configuration
@@ -114,6 +123,8 @@ def test_missing_ini(configuration):
 
 def test_missing_server_section(configuration):
     config_dir, json_path, _ = configuration
-    (config_dir / "kvstore.ini").write_text("[persistence]\nmode=none\n", encoding="utf-8")
+    (config_dir / "kvstore.ini").write_text(
+        "[persistence]\nmode=none\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="missing"):
         run.load_config(config_dir, json_path)

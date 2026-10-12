@@ -12,12 +12,15 @@ from redis.exceptions import ConnectionError, RedisError, TimeoutError
 
 from vectordb_service import run, server, vectordb_pb2, vectordb_pb2_grpc
 
-
 SETTINGS = {
-    "vectordb_host": "127.0.0.1", "vectordb_port": 8060,
-    "vectordb_max_connections": 20, "vectordb_timeout": 5,
-    "kvstore_host": "127.0.0.1", "kvstore_port": 8050,
-    "kvstore_max_connections": 20, "kvstore_timeout": 5,
+    "vectordb_host": "127.0.0.1",
+    "vectordb_port": 8060,
+    "vectordb_max_connections": 20,
+    "vectordb_timeout": 5,
+    "kvstore_host": "127.0.0.1",
+    "kvstore_port": 8050,
+    "kvstore_max_connections": 20,
+    "kvstore_timeout": 5,
 }
 
 
@@ -66,13 +69,17 @@ async def test_vsearch_filters_missing_text_but_preserves_empty_text(rpc, rag):
     rag.vectordb.search_uuids.return_value = ["first", "missing", "empty"]
     values = {"first": "text", "missing": None, "empty": ""}
     rag.kvstore.get.side_effect = lambda key: values[key]
-    response = await rpc.Vsearch(vectordb_pb2.VsearchRequest(text="query", topk=3), timeout=3)
+    response = await rpc.Vsearch(
+        vectordb_pb2.VsearchRequest(text="query", topk=3), timeout=3
+    )
     assert list(response.texts) == ["text", ""]
     rag.vectordb.search_uuids.assert_awaited_once_with([1.0] * 768, 3)
 
 
 async def test_empty_vector_search_does_not_read_text(rpc, rag):
-    response = await rpc.Vsearch(vectordb_pb2.VsearchRequest(text="query", topk=5), timeout=3)
+    response = await rpc.Vsearch(
+        vectordb_pb2.VsearchRequest(text="query", topk=5), timeout=3
+    )
     assert list(response.texts) == []
     rag.kvstore.get.assert_not_awaited()
 
@@ -80,7 +87,9 @@ async def test_empty_vector_search_does_not_read_text(rpc, rag):
 @pytest.mark.parametrize("top_k", [0, -1, 65536])
 async def test_invalid_top_k(rpc, rag, top_k):
     with pytest.raises(grpc.aio.AioRpcError) as failure:
-        await rpc.Vsearch(vectordb_pb2.VsearchRequest(text="query", topk=top_k), timeout=3)
+        await rpc.Vsearch(
+            vectordb_pb2.VsearchRequest(text="query", topk=top_k), timeout=3
+        )
     assert failure.value.code() == grpc.StatusCode.INVALID_ARGUMENT
     rag.vectordb.search_uuids.assert_not_awaited()
 
@@ -94,11 +103,14 @@ async def test_unsuccessful_write_reports_internal(rpc, rag, backend):
     assert failure.value.code() == grpc.StatusCode.INTERNAL
 
 
-@pytest.mark.parametrize("error,status", [
-    (ConnectionError("offline"), grpc.StatusCode.UNAVAILABLE),
-    (TimeoutError("busy"), grpc.StatusCode.UNAVAILABLE),
-    (RedisError("failed"), grpc.StatusCode.INTERNAL),
-])
+@pytest.mark.parametrize(
+    "error,status",
+    [
+        (ConnectionError("offline"), grpc.StatusCode.UNAVAILABLE),
+        (TimeoutError("busy"), grpc.StatusCode.UNAVAILABLE),
+        (RedisError("failed"), grpc.StatusCode.INTERNAL),
+    ],
+)
 async def test_write_errors_are_rpc_statuses(rpc, rag, error, status):
     rag.vectordb.insert_vector.side_effect = error
     with pytest.raises(grpc.aio.AioRpcError) as failure:
@@ -106,11 +118,14 @@ async def test_write_errors_are_rpc_statuses(rpc, rag, error, status):
     assert failure.value.code() == status
 
 
-@pytest.mark.parametrize("error,status", [
-    (ConnectionError("offline"), grpc.StatusCode.UNAVAILABLE),
-    (TimeoutError("busy"), grpc.StatusCode.UNAVAILABLE),
-    (RedisError("failed"), grpc.StatusCode.INTERNAL),
-])
+@pytest.mark.parametrize(
+    "error,status",
+    [
+        (ConnectionError("offline"), grpc.StatusCode.UNAVAILABLE),
+        (TimeoutError("busy"), grpc.StatusCode.UNAVAILABLE),
+        (RedisError("failed"), grpc.StatusCode.INTERNAL),
+    ],
+)
 async def test_get_errors_are_not_silently_filtered(rpc, rag, error, status):
     rag.vectordb.search_uuids.return_value = ["first"]
     rag.kvstore.get.side_effect = error
@@ -119,7 +134,9 @@ async def test_get_errors_are_not_silently_filtered(rpc, rag, error, status):
     assert failure.value.code() == status
 
 
-@pytest.mark.parametrize("failure", [None, RuntimeError("server failed"), asyncio.CancelledError()])
+@pytest.mark.parametrize(
+    "failure", [None, RuntimeError("server failed"), asyncio.CancelledError()]
+)
 async def test_serve_closes_grpc_and_backend_pools(monkeypatch, rag, failure):
     transport = SimpleNamespace(
         add_insecure_port=Mock(return_value=50051),

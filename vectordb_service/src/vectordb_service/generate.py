@@ -9,7 +9,9 @@ def main():
     output_dir = project_dir / "src"
     proto_file = proto_dir / "vectordb.proto"
     if not proto_file.is_file():
-        raise SystemExit("Run this command from an editable checkout containing proto/vectordb.proto")
+        raise SystemExit(
+            "Run this command from an editable checkout containing proto/vectordb.proto"
+        )
 
     result = protoc.main(
         [

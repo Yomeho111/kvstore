@@ -61,7 +61,9 @@ def load_config(config_dir=None, server_config_path=None):
             try:
                 port = parser.getint("server", "port", fallback=None)
             except ValueError as error:
-                raise ValueError(f"{ini_path}: [server] port must be an integer") from error
+                raise ValueError(
+                    f"{ini_path}: [server] port must be an integer"
+                ) from error
             location = f"{ini_path}: [server]"
 
         if not isinstance(host, str) or not host.strip():
@@ -127,10 +129,22 @@ async def _run_with_signals(**settings):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Run the kvstore vector gRPC service")
-    parser.add_argument("--config-dir", type=Path, help="Directory containing the backend INI files")
-    parser.add_argument("--server-config", type=Path, dest="server_config_path", help="Connection settings JSON")
+    parser.add_argument(
+        "--config-dir", type=Path, help="Directory containing the backend INI files"
+    )
+    parser.add_argument(
+        "--server-config",
+        type=Path,
+        dest="server_config_path",
+        help="Connection settings JSON",
+    )
     parser.add_argument("--listen", default="127.0.0.1:50051", help="gRPC host:port")
-    parser.add_argument("--model", default=DEFAULT_MODEL, dest="model_name", help="768-dimensional model name or local path")
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        dest="model_name",
+        help="768-dimensional model name or local path",
+    )
     arguments = parser.parse_args(argv)
     try:
         asyncio.run(_run_with_signals(**vars(arguments)))
