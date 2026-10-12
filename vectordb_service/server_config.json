@@ -1,0 +1,10 @@
+{
+    "kvstore": {
+        "max_connection": 20,
+        "timeout": 5
+    },
+    "vectordb": {
+        "max_connection": 20,
+        "timeout": 5
+    }
+}

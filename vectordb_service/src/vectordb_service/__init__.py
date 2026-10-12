@@ -1,0 +1,1 @@
+"""Async gRPC service for kvstore vector search."""

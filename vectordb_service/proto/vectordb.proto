@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package vectordb.kvstore.com;
+
+message VsetRequest {
+    string text = 1;
+}
+
+message VsearchRequest {
+    int32 topk = 1;
+    string text = 2;
+}
+
+message VsetResponse {
+    string uuid = 1;
+}
+
+message VsearchResponse {
+    repeated string texts = 1;
+}
+
+service Rag {
+    rpc Vset (VsetRequest) returns (VsetResponse);
+    rpc Vsearch (VsearchRequest) returns (VsearchResponse);
+}

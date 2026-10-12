@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+dist/
+*.egg-info/
+!src/vectordb_service/vectordb_pb2.py
+!src/vectordb_service/vectordb_pb2_grpc.py
