@@ -71,21 +71,21 @@ endif()
 
 
 add_library(kvstore_core STATIC
-    memory/allocator.cpp
-    memory/big_memory_allocator.cpp
-    memory/central_pool.cpp
-    memory/page_allocator.cpp
-    memory/thread_cache.cpp
-    config/kv_config.cpp
-    logger/kv_log.cpp
-    network/network_utils.cpp
-    core_engine/rbtree_engine/rbtree_engine.cpp
-    core_engine/array_engine/array_engine.cpp
-    core_engine/hash_engine/hash_engine.cpp
-    core_engine/skiplist_engine/skiplist_engine.cpp
-    persistent_core/kv_persistent.cpp
-    replicate/replicate.cpp
-    timer/timer.cpp
+    src/memory/allocator.cpp
+    src/memory/big_memory_allocator.cpp
+    src/memory/central_pool.cpp
+    src/memory/page_allocator.cpp
+    src/memory/thread_cache.cpp
+    src/config/kv_config.cpp
+    src/logger/kv_log.cpp
+    src/network/network_utils.cpp
+    src/core_engine/rbtree_engine/rbtree_engine.cpp
+    src/core_engine/array_engine/array_engine.cpp
+    src/core_engine/hash_engine/hash_engine.cpp
+    src/core_engine/skiplist_engine/skiplist_engine.cpp
+    src/persistent_core/kv_persistent.cpp
+    src/replicate/replicate.cpp
+    src/timer/timer.cpp
     third_party/hiredis/alloc.c
     third_party/hiredis/async.c
     third_party/hiredis/hiredis.c
@@ -97,23 +97,29 @@ add_library(kvstore_core STATIC
 
 target_include_directories(kvstore_core
     PUBLIC
-        ${PROJECT_SOURCE_DIR}/core_engine
-        ${PROJECT_SOURCE_DIR}/memory
-        ${PROJECT_SOURCE_DIR}/network
-        ${PROJECT_SOURCE_DIR}/protocal
-        ${PROJECT_SOURCE_DIR}/persistent_core
-        ${PROJECT_SOURCE_DIR}/config
-        ${PROJECT_SOURCE_DIR}/logger
-        ${PROJECT_SOURCE_DIR}/base_component/rbtree
-        ${PROJECT_SOURCE_DIR}/base_component/array
-        ${PROJECT_SOURCE_DIR}/base_component/hash
-        ${PROJECT_SOURCE_DIR}/base_component/skiplist
-        ${PROJECT_SOURCE_DIR}/base_component/lockfree_queue
-        ${PROJECT_SOURCE_DIR}/base_component/thread_pool
-        ${PROJECT_SOURCE_DIR}/timer
-        ${PROJECT_SOURCE_DIR}/replicate
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/include/core_engine
+        ${PROJECT_SOURCE_DIR}/include/memory
+        ${PROJECT_SOURCE_DIR}/include/network
+        ${PROJECT_SOURCE_DIR}/include/protocal
+        ${PROJECT_SOURCE_DIR}/include/persistent_core
+        ${PROJECT_SOURCE_DIR}/include/config
+        ${PROJECT_SOURCE_DIR}/include/logger
+        ${PROJECT_SOURCE_DIR}/include/base_component/rbtree
+        ${PROJECT_SOURCE_DIR}/include/base_component/array
+        ${PROJECT_SOURCE_DIR}/include/base_component/hash
+        ${PROJECT_SOURCE_DIR}/include/base_component/skiplist
+        ${PROJECT_SOURCE_DIR}/include/base_component/lockfree_queue
+        ${PROJECT_SOURCE_DIR}/include/base_component/thread_pool
+        ${PROJECT_SOURCE_DIR}/include/timer
+        ${PROJECT_SOURCE_DIR}/include/replicate
         ${PROJECT_SOURCE_DIR}/third_party/hiredis
         ${PROJECT_SOURCE_DIR}/third_party/isa-l/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include/core_engine/rbtree_engine
+        ${PROJECT_SOURCE_DIR}/include/core_engine/array_engine
+        ${PROJECT_SOURCE_DIR}/include/core_engine/hash_engine
+        ${PROJECT_SOURCE_DIR}/include/core_engine/skiplist_engine
 )
 
 set(ISAL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -137,10 +143,10 @@ endif()
 
 if(ENABLE_RAG)
     target_sources(kvstore_core PRIVATE
-        vector_database/vectordb_tool.cpp
+        src/vector_database/vectordb_tool.cpp
     )
     target_include_directories(kvstore_core PUBLIC
-        ${PROJECT_SOURCE_DIR}/vector_database
+        ${PROJECT_SOURCE_DIR}/include/vector_database
     )
     target_compile_definitions(kvstore_core PUBLIC ENABLE_RAG)
 endif()
@@ -179,10 +185,10 @@ endif()
 
 # if(NETWORK STREQUAL "REACTOR")
 #     target_sources(kvstore_backend PRIVATE
-#         network/reactor/reactor.cpp
+#         src/network/reactor/reactor.cpp
 #     )
 #     target_include_directories(kvstore_backend PUBLIC
-#         ${PROJECT_SOURCE_DIR}/network/reactor
+#         ${PROJECT_SOURCE_DIR}/include/network/reactor
 #     )
 #     target_compile_definitions(kvstore_backend PUBLIC REACTOR)
 # elseif(NETWORK STREQUAL "PROACTOR")
@@ -190,24 +196,24 @@ endif()
 #     find_library(LIBURING_LIBRARY uring REQUIRED)
 
 #     target_sources(kvstore_backend PRIVATE
-#         network/proactor/uring_tcp.cpp
+#         src/network/proactor/uring_tcp.cpp
 #     )
 #     target_include_directories(kvstore_backend PUBLIC
-#         ${PROJECT_SOURCE_DIR}/network/proactor
+#         ${PROJECT_SOURCE_DIR}/include/network/proactor
 #         ${LIBURING_INCLUDE_DIR}
 #     )
 #     target_compile_definitions(kvstore_backend PUBLIC PROACTOR)
 #     target_link_libraries(kvstore_backend PUBLIC ${LIBURING_LIBRARY})
 # elseif(NETWORK STREQUAL "COROUTINE")
 #     target_sources(kvstore_backend PRIVATE
-#         network/my_coroutine/coroutine_server.cpp
-#         network/my_coroutine/my_coroutine/hpc_coroutine.cpp
-#         network/my_coroutine/my_coroutine/hpc_socket.cpp
-#         network/my_coroutine/my_coroutine/utils.cpp
+#         src/network/my_coroutine/coroutine_server.cpp
+#         src/network/my_coroutine/my_coroutine/hpc_coroutine.cpp
+#         src/network/my_coroutine/my_coroutine/hpc_socket.cpp
+#         src/network/my_coroutine/my_coroutine/utils.cpp
 #     )
 #     target_include_directories(kvstore_backend PUBLIC
-#         ${PROJECT_SOURCE_DIR}/network/my_coroutine
-#         ${PROJECT_SOURCE_DIR}/network/my_coroutine/my_coroutine
+#         ${PROJECT_SOURCE_DIR}/include/network/my_coroutine
+#         ${PROJECT_SOURCE_DIR}/include/network/my_coroutine/my_coroutine
 #     )
 #     target_compile_definitions(kvstore_backend PUBLIC COROUTINE)
 #     target_link_libraries(kvstore_backend PUBLIC ${CMAKE_DL_LIBS})
@@ -215,45 +221,48 @@ endif()
 #     message(FATAL_ERROR "Unsupported NETWORK='${NETWORK}'. Use REACTOR, PROACTOR, or COROUTINE.")
 # endif()
 target_sources(kvstore_backend PRIVATE
-        network/my_coroutine/coroutine_server.cpp
-        network/my_coroutine/my_coroutine/hpc_coroutine.cpp
-        network/my_coroutine/my_coroutine/hpc_socket.cpp
-        network/my_coroutine/my_coroutine/utils.cpp
+    src/network/my_coroutine/coroutine_server.cpp
+    src/network/my_coroutine/my_coroutine/hpc_coroutine.cpp
+    src/network/my_coroutine/my_coroutine/hpc_socket.cpp
+    src/network/my_coroutine/my_coroutine/utils.cpp
     )
 
 if(NOT BUILD_EBPF_TRANSFER)
     target_sources(kvstore_backend PRIVATE
-        ebpf/cache_pool.cpp
-        ebpf/tcp_server.cpp
-        ebpf/transfer_worker.cpp
+        src/ebpf/cache_pool.cpp
+        src/ebpf/tcp_server.cpp
+        src/ebpf/transfer_worker.cpp
     )
     target_include_directories(kvstore_backend PRIVATE
-        ${PROJECT_SOURCE_DIR}/ebpf
+        ${PROJECT_SOURCE_DIR}/include/ebpf
     )
 endif()
 
 target_include_directories(kvstore_backend PUBLIC
-        ${PROJECT_SOURCE_DIR}/network/my_coroutine
-        ${PROJECT_SOURCE_DIR}/network/my_coroutine/my_coroutine
+    ${PROJECT_SOURCE_DIR}/include/network/my_coroutine
+    ${PROJECT_SOURCE_DIR}/include/network/my_coroutine/my_coroutine
 )
 target_compile_definitions(kvstore_backend PUBLIC COROUTINE)
 target_link_libraries(kvstore_backend PUBLIC ${CMAKE_DL_LIBS} isal)
 
-add_executable(kvstore main.cpp)
+add_executable(kvstore src/main.cpp)
 target_link_libraries(kvstore PRIVATE kvstore_backend)
 
 add_executable(kvstore_client
-    kvstore_client/main.cpp
-    kvstore_client/client.cpp
+    src/kvstore_client/main.cpp
+    src/kvstore_client/client.cpp
+)
+target_include_directories(kvstore_client PRIVATE
+    ${PROJECT_SOURCE_DIR}/include/kvstore_client
 )
 target_link_libraries(kvstore_client PRIVATE kvstore_core)
 
 add_executable(kvstore_client_testcase
-    kvstore_client/testcase.cpp
+    src/kvstore_client/testcase.cpp
 )
 target_link_libraries(kvstore_client_testcase PRIVATE kvstore_core)
 
 # Separate executable, it traces a running kvstore instead of linking against it.
 if(BUILD_EBPF_TRANSFER)
-    add_subdirectory(ebpf)
+    add_subdirectory(src/ebpf ebpf)
 endif()

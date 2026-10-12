@@ -87,7 +87,7 @@ show_log_tail()
     fi
 }
 
-# kvstore ignores SIGTERM (main.cpp sets every signal to SIG_IGN), and a
+# kvstore ignores SIGTERM (src/main.cpp sets every signal to SIG_IGN), and a
 # snapshot child outlives its parent, so kill the whole family outright.
 stop_server()
 {

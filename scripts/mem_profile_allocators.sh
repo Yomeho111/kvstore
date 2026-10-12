@@ -18,7 +18,7 @@
 #   peak    after testcase mode 5 has SET the whole working set
 #   end     SETTLE seconds after testcase mode 6 has DEL'd every key
 #
-# The working-set size is the N constant in kvstore_client/testcase.cpp.
+# The working-set size is the N constant in src/kvstore_client/testcase.cpp.
 # A markdown table of every sample is printed at the end.
 #
 # Overrides: BUILD_DIR, HOST, PORT, SETTLE, PHASE_TIMEOUT, BUILD_TYPE,

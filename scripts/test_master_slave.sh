@@ -49,7 +49,7 @@ SYNC_QUIET_TENTHS=${SYNC_QUIET_TENTHS:-20}
 LOG_LEVEL=${LOG_LEVEL:-info}
 BUILD_DIR_NAME=build-replication-test
 COPY_MARKER=.kvstore-replication-test-copy
-# RDMA_BUFFER_SIZE (replicate/rdma.h) is 128 MiB and gets pinned by ibv_reg_mr.
+# RDMA_BUFFER_SIZE (include/replicate/rdma.h) is 128 MiB and gets pinned by ibv_reg_mr.
 RDMA_LOCKED_KIB=131072
 
 MASTER_BUILD=$(readlink -m -- "${BUILD_DIR:-$MASTER_REPO/$BUILD_DIR_NAME}")
