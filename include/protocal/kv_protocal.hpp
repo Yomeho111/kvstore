@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string>
 #include <cctype>
+#include <charconv>
+#include <cmath>
 
 #include "status.h"
 #include "engine_interface.hpp"
@@ -541,9 +543,9 @@ namespace kv_protocal
 #ifdef ENABLE_RAG
                 case KV_VSEARCH:
                 {
-                    if (argc < 3)
+                    if (argc < 4)
                     {
-                        out += "-ERR wrong number of arguments for 'vsearch' command\r\n";
+                        out += "-ERR wrong number of arguments for 'vsearch' command, <vector> <topk> <threshold>\r\n";
                         return 0;
                     }
 
@@ -551,6 +553,13 @@ namespace kv_protocal
                     if (!_resp_to_ll(argv[2], argvlen[2], K) || K <= 0 || K > 65535)
                     {
                         out += "-ERR invalid K\r\n";
+                        return 0;
+                    }
+
+                    float threshold = 0.0f;
+                    if (!_resp_to_float(argv[3], argvlen[3], threshold))
+                    {
+                        out += "-ERR invalid threshold\r\n";
                         return 0;
                     }
 
@@ -563,7 +572,7 @@ namespace kv_protocal
                     int top_k = static_cast<int>(K);
 
                     char *value = nullptr;
-                    int ret = _engine.vsearch(argv[1], argvlen[1], top_k, &value);
+                    int ret = _engine.vsearch(argv[1], argvlen[1], top_k, threshold, &value);
                     if (ret > 0)
                     {
                         size_t vlen = static_cast<size_t>(ret) - 2;
@@ -675,6 +684,16 @@ namespace kv_protocal
             }
             out = neg ? -v : v;
             return true;
+        }
+
+        static bool _resp_to_float(const char *data, size_t length, float &out)
+        {
+            if (data == nullptr || length == 0)
+                return false;
+
+            const char *end = data + length;
+            auto result = std::from_chars(data, end, out, std::chars_format::general);
+            return result.ec == std::errc{} && result.ptr == end && std::isfinite(out);
         }
 
         // Fill a TimeoutSpec (interpreted by the engine as a relative TTL) from

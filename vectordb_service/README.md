@@ -59,6 +59,27 @@ An installed wheel works without this repository: it uses packaged defaults
 (KV port 8050, vector port 8060) or explicit configuration paths. Without INI
 files, JSON objects may also specify `host` and `port`.
 
+## Search Threshold
+
+Pass the distance threshold explicitly when constructing a search request:
+
+```python
+from vectordb_service import vectordb_pb2
+
+request = vectordb_pb2.VsearchRequest(text="query", topk=5, threshold=0.5)
+```
+
+The service forwards it using `search_uuids(embedding, threshold=..., k=...)`.
+The RESP command is `VSEARCH <vector> <topk> <threshold>`. The backend uses
+cosine distance (`1 - cosine_similarity`) and keeps candidates whose distance
+is strictly less than the threshold, so it may return fewer than `topk` texts.
+NaN and infinity are rejected. An omitted proto3 float has the value `0.0`;
+it is not automatically replaced by a permissive default.
+
+The current request uses field numbers `topk=1`, `threshold=2`, `text=3`.
+This changes the previous `text=2` wire contract: regenerate client protobuf
+bindings and update clients together with the server.
+
 ## Development And Tests
 
 ```bash

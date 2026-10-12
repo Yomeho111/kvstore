@@ -1,7 +1,22 @@
-# Local Kubernetes Deployment
+# Local Container Deployment
 
 These files were generated and statically reviewed only. No image build,
 container startup, Kubernetes apply, or deployment test was performed.
+
+## Docker Compose Alternative
+
+For a single-machine deployment without Kubernetes or a registry, use
+[compose/compose.yaml](compose/compose.yaml) and the instructions in
+[compose/README.md](compose/README.md). It builds the same three images locally,
+mounts standalone configs, and persists database data and model cache in named
+volumes. From the repository root:
+
+```bash
+docker compose -f deploy/compose/compose.yaml build
+docker compose -f deploy/compose/compose.yaml up -d
+```
+
+The following sections describe the existing Kubernetes option.
 
 ## Images And Workloads
 

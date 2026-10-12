@@ -44,13 +44,14 @@ async def test_insert_vector(redis_client):
 @pytest.mark.parametrize(
     "reply,expected", [("uuid-one,uuid-two", ["uuid-one", "uuid-two"]), (None, [])]
 )
-async def test_search_result_strings(redis_client, reply, expected):
+@pytest.mark.parametrize("threshold", [0.0, 0.5, 2.0])
+async def test_search_result_strings(redis_client, reply, expected, threshold):
     redis_client.execute_command.return_value = reply
     async with connections.VectorDbConnectionPool() as database:
-        result = await database.search_uuids([1.0] * 768, 5)
+        result = await database.search_uuids([1.0] * 768, threshold=threshold, k=5)
     assert result == expected
     redis_client.execute_command.assert_awaited_once_with(
-        "VSEARCH", connections.encode_vector([1.0] * 768), 5
+        "VSEARCH", connections.encode_vector([1.0] * 768), 5, threshold
     )
 
 

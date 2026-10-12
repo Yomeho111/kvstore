@@ -122,10 +122,13 @@ namespace kv_engine
         }
 
 #ifdef ENABLE_RAG
-        int vsearch(const char *vector, size_t vec_len, int K, char **response) override
+        int vsearch(const char *vector, size_t vec_len, int K, float threshold, char **response) override
         {
             if (!vector || vec_len == 0 || K <= 0)
                 return -1;
+
+            if (static_cast<double>(threshold) <= 1e-8)
+                return 0;
 
             std::lock_guard lk{lock_};
             auto &base = static_cast<RealEngine *>(this)->get_base();
@@ -141,7 +144,7 @@ namespace kv_engine
             {
                 auto *node = *it;
                 float distance = vectordb::VectorDbEngine::calculate_distance(vector, vec_len, node->value.c_str(), node->value.size());
-                if (std::fabs(distance - vectordb::INVALID_DISTANCE) < 1e-6)
+                if (std::fabs(distance - vectordb::INVALID_DISTANCE) < 1e-6 || distance >= threshold)
                     continue;
                 node_vec.emplace_back(distance, &node->key);
             }
