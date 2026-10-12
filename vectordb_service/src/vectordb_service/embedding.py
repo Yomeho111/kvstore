@@ -1,4 +1,4 @@
-DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+DEFAULT_MODEL = "Alibaba-NLP/gte-multilingual-base"
 
 
 class EmbeddingLayer:
@@ -13,7 +13,7 @@ class EmbeddingLayer:
                 "Embedding dependencies are missing. Run: uv sync --extra embedding"
             ) from error
 
-        self.model = SentenceTransformer(model_name)
+        self.model = SentenceTransformer(model_name, trust_remote_code=True)
 
     def encode(self, text: str):
         return self.model.encode(text, normalize_embeddings=True)

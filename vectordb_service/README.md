@@ -37,7 +37,7 @@ uv run --no-sync vectordb-server --config-dir ../config --server-config server_c
 ```
 
 The first startup downloads the model
-`sentence-transformers/paraphrase-multilingual-mpnet-base-v2` and needs network
+`Alibaba-NLP/gte-multilingual-base` and needs network
 access and enough disk space for its weights. Linux model dependencies use CPU
 PyTorch wheels, avoiding CUDA downloads. A predownloaded 768-dimensional model
 can be supplied with `--model /path/to/model`.
