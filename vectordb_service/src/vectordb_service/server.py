@@ -66,9 +66,6 @@ class Rag(vectordb_pb2_grpc.RagServicer):
             if not vector_written:
                 await context.abort(grpc.StatusCode.INTERNAL, "Vector write failed")
 
-            text_written = await self.kvstore.set(record_uuid, request.text)
-            if not text_written:
-                await context.abort(grpc.StatusCode.INTERNAL, "Text write failed")
         except (ConnectionError, TimeoutError):
             await context.abort(grpc.StatusCode.UNAVAILABLE, "Storage unavailable")
         except RedisError:
@@ -94,15 +91,34 @@ class Rag(vectordb_pb2_grpc.RagServicer):
             )
 
             if not uuids:
-                return vectordb_pb2.VsearchResponse(texts=[])
+                return vectordb_pb2.VsearchResponse(uuids=[])
 
-            texts = await asyncio.gather(
-                *(self.kvstore.get(record_uuid) for record_uuid in uuids)
-            )
-
-            texts = [text for text in texts if text is not None]
-            return vectordb_pb2.VsearchResponse(texts=texts)
+            return vectordb_pb2.VsearchResponse(uuids=uuids)
         except (ConnectionError, TimeoutError):
             await context.abort(grpc.StatusCode.UNAVAILABLE, "Storage unavailable")
         except RedisError:
             await context.abort(grpc.StatusCode.INTERNAL, "Storage read failed")
+
+    async def Set(self, request, context) -> vectordb_pb2.SetResponse:
+        try:
+            text_written = await self.kvstore.set(request.uuid, request.text)
+            if not text_written:
+                await context.abort(grpc.StatusCode.INTERNAL, "Text write failed")
+        except (ConnectionError, TimeoutError):
+            await context.abort(grpc.StatusCode.UNAVAILABLE, "Storage unavailable")
+        except RedisError:
+            await context.abort(grpc.StatusCode.INTERNAL, "Storage write failed")
+
+        return vectordb_pb2.SetResponse(ok=True)
+
+    async def Get(self, request, context) -> vectordb_pb2.GetResponse:
+        try:
+            text = await self.kvstore.get(request.uuid)
+            if text is None:
+                await context.abort(grpc.StatusCode.NOT_FOUND, "Text not found")
+        except (ConnectionError, TimeoutError):
+            await context.abort(grpc.StatusCode.UNAVAILABLE, "Storage unavailable")
+        except RedisError:
+            await context.abort(grpc.StatusCode.INTERNAL, "Storage read failed")
+
+        return vectordb_pb2.GetResponse(text=text)

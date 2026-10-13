@@ -17,10 +17,30 @@ message VsetResponse {
 }
 
 message VsearchResponse {
-    repeated string texts = 1;
+    repeated string uuids = 1;
+}
+
+
+message SetRequest {
+    string uuid = 1;
+    string text = 2;
+}
+
+message GetRequest {
+    string uuid = 1;
+}
+
+message SetResponse {
+    bool ok = 1;
+}
+
+message GetResponse {
+    string text = 1;
 }
 
 service Rag {
     rpc Vset (VsetRequest) returns (VsetResponse);
     rpc Vsearch (VsearchRequest) returns (VsearchResponse);
+    rpc Set (SetRequest) returns (SetResponse);
+    rpc Get (GetRequest) returns (GetResponse);
 }
