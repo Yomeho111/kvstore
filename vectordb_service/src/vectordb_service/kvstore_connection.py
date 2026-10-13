@@ -24,9 +24,11 @@ class VectorDbConnectionPool:
         async with redis.Redis(connection_pool=self.pool) as db:
             return await db.set(str(record_uuid), encode_vector(embedding))
 
-    async def search_uuids(self, embedding, k=5) -> list[str]:
+    async def search_uuids(self, embedding, threshold: float, k=5) -> list[str]:
         async with redis.Redis(connection_pool=self.pool) as db:
-            result = await db.execute_command("VSEARCH", encode_vector(embedding), k)
+            result = await db.execute_command(
+                "VSEARCH", encode_vector(embedding), k, threshold
+            )
             return result.split(",") if result else []
 
     async def aclose(self):

@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1fvectordb_service/vectordb.proto\x12\x14vectordb.kvstore.com\"\x1b\n\x0bVsetRequest\x12\x0c\n\x04text\x18\x01 \x01(\t\",\n\x0eVsearchRequest\x12\x0c\n\x04topk\x18\x01 \x01(\x05\x12\x0c\n\x04text\x18\x02 \x01(\t\"\x1c\n\x0cVsetResponse\x12\x0c\n\x04uuid\x18\x01 \x01(\t\" \n\x0fVsearchResponse\x12\r\n\x05texts\x18\x01 \x03(\t2\xac\x01\n\x03Rag\x12M\n\x04Vset\x12!.vectordb.kvstore.com.VsetRequest\x1a\".vectordb.kvstore.com.VsetResponse\x12V\n\x07Vsearch\x12$.vectordb.kvstore.com.VsearchRequest\x1a%.vectordb.kvstore.com.VsearchResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x1fvectordb_service/vectordb.proto\x12\x14vectordb.kvstore.com\"\x1b\n\x0bVsetRequest\x12\x0c\n\x04text\x18\x01 \x01(\t\"?\n\x0eVsearchRequest\x12\x0c\n\x04topk\x18\x01 \x01(\x05\x12\x11\n\tthreshold\x18\x02 \x01(\x02\x12\x0c\n\x04text\x18\x03 \x01(\t\"\x1c\n\x0cVsetResponse\x12\x0c\n\x04uuid\x18\x01 \x01(\t\" \n\x0fVsearchResponse\x12\r\n\x05texts\x18\x01 \x03(\t2\xac\x01\n\x03Rag\x12M\n\x04Vset\x12!.vectordb.kvstore.com.VsetRequest\x1a\".vectordb.kvstore.com.VsetResponse\x12V\n\x07Vsearch\x12$.vectordb.kvstore.com.VsearchRequest\x1a%.vectordb.kvstore.com.VsearchResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,11 +34,11 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_VSETREQUEST']._serialized_start=57
   _globals['_VSETREQUEST']._serialized_end=84
   _globals['_VSEARCHREQUEST']._serialized_start=86
-  _globals['_VSEARCHREQUEST']._serialized_end=130
-  _globals['_VSETRESPONSE']._serialized_start=132
-  _globals['_VSETRESPONSE']._serialized_end=160
-  _globals['_VSEARCHRESPONSE']._serialized_start=162
-  _globals['_VSEARCHRESPONSE']._serialized_end=194
-  _globals['_RAG']._serialized_start=197
-  _globals['_RAG']._serialized_end=369
+  _globals['_VSEARCHREQUEST']._serialized_end=149
+  _globals['_VSETRESPONSE']._serialized_start=151
+  _globals['_VSETRESPONSE']._serialized_end=179
+  _globals['_VSEARCHRESPONSE']._serialized_start=181
+  _globals['_VSEARCHRESPONSE']._serialized_end=213
+  _globals['_RAG']._serialized_start=216
+  _globals['_RAG']._serialized_end=388
 # @@protoc_insertion_point(module_scope)

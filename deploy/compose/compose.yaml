@@ -1,0 +1,145 @@
+name: vector-stack
+
+x-database: &database
+  platform: linux/amd64
+  pull_policy: never
+  restart: unless-stopped
+  user: "10001:10001"
+  working_dir: /data
+  read_only: true
+  stop_grace_period: 60s
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+    - seccomp=unconfined
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  networks:
+    - backend
+
+services:
+  kvstore:
+    <<: *database
+    image: kvstore:dev
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.kvstore
+      args:
+        ENABLE_RAG: "OFF"
+        BUILD_JOBS: "${BUILD_JOBS:-2}"
+    command: ["--config", "/etc/kvstore/kvstore.ini"]
+    expose:
+      - "8050"
+    cpus: 2.0
+    mem_limit: 1g
+    configs:
+      - source: kvstore-config
+        target: /etc/kvstore/kvstore.ini
+    volumes:
+      - kvstore-data:/data
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8050"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10m
+
+  vectordb:
+    <<: *database
+    image: vectordb:dev
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.kvstore
+      args:
+        ENABLE_RAG: "ON"
+        BUILD_JOBS: "${BUILD_JOBS:-2}"
+    command: ["--config", "/etc/kvstore/kvstore.ini"]
+    expose:
+      - "8060"
+    cpus: 2.0
+    mem_limit: 2g
+    configs:
+      - source: vectordb-config
+        target: /etc/kvstore/kvstore.ini
+    volumes:
+      - vectordb-data:/data
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8060"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10m
+
+  vectordb-service:
+    image: vectordb-service:dev
+    platform: linux/amd64
+    pull_policy: never
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.service
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    stop_grace_period: 60s
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      kvstore:
+        condition: service_healthy
+        restart: true
+      vectordb:
+        condition: service_healthy
+        restart: true
+    command:
+      - --listen
+      - 0.0.0.0:50051
+      - --server-config
+      - /etc/vectordb/server_config.json
+      - --model
+      - "${MODEL_NAME:-Alibaba-NLP/gte-multilingual-base}"
+    environment:
+      HF_HOME: /cache/huggingface
+      HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
+    ports:
+      - "${GRPC_BIND_ADDRESS:-127.0.0.1}:${GRPC_PORT:-50051}:50051"
+    cpus: 4.0
+    mem_limit: 6g
+    configs:
+      - source: service-config
+        target: /etc/vectordb/server_config.json
+    volumes:
+      - model-cache:/cache
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    networks:
+      - backend
+    healthcheck:
+      test:
+        - CMD
+        - /opt/venv/bin/python
+        - -c
+        - "import socket; socket.create_connection(('127.0.0.1', 50051), timeout=2).close()"
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30m
+
+configs:
+  kvstore-config:
+    file: ./config/kvstore.ini
+  vectordb-config:
+    file: ./config/vectordb.ini
+  service-config:
+    file: ./config/server_config.json
+
+volumes:
+  kvstore-data:
+  vectordb-data:
+  model-cache:
+
+networks:
+  backend:
+    driver: bridge

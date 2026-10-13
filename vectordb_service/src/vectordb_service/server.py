@@ -11,6 +11,7 @@ from redis.exceptions import ConnectionError, RedisError, TimeoutError
 import uuid
 import grpc
 import asyncio
+import math
 
 
 class Rag(vectordb_pb2_grpc.RagServicer):
@@ -81,9 +82,16 @@ class Rag(vectordb_pb2_grpc.RagServicer):
                 grpc.StatusCode.INVALID_ARGUMENT, "topk must be between 1 and 65535"
             )
 
+        if not math.isfinite(request.threshold):
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT, "threshold must be a finite float"
+            )
+
         embedding = self.embedding_layer.encode(request.text)
         try:
-            uuids = await self.vectordb.search_uuids(embedding.tolist(), request.topk)
+            uuids = await self.vectordb.search_uuids(
+                embedding.tolist(), threshold=request.threshold, k=request.topk
+            )
 
             if not uuids:
                 return vectordb_pb2.VsearchResponse(texts=[])

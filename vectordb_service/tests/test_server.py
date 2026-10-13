@@ -70,15 +70,15 @@ async def test_vsearch_filters_missing_text_but_preserves_empty_text(rpc, rag):
     values = {"first": "text", "missing": None, "empty": ""}
     rag.kvstore.get.side_effect = lambda key: values[key]
     response = await rpc.Vsearch(
-        vectordb_pb2.VsearchRequest(text="query", topk=3), timeout=3
+        vectordb_pb2.VsearchRequest(text="query", topk=3, threshold=0.5), timeout=3
     )
     assert list(response.texts) == ["text", ""]
-    rag.vectordb.search_uuids.assert_awaited_once_with([1.0] * 768, 3)
+    rag.vectordb.search_uuids.assert_awaited_once_with([1.0] * 768, threshold=0.5, k=3)
 
 
 async def test_empty_vector_search_does_not_read_text(rpc, rag):
     response = await rpc.Vsearch(
-        vectordb_pb2.VsearchRequest(text="query", topk=5), timeout=3
+        vectordb_pb2.VsearchRequest(text="query", topk=5, threshold=0.5), timeout=3
     )
     assert list(response.texts) == []
     rag.kvstore.get.assert_not_awaited()
@@ -88,9 +88,34 @@ async def test_empty_vector_search_does_not_read_text(rpc, rag):
 async def test_invalid_top_k(rpc, rag, top_k):
     with pytest.raises(grpc.aio.AioRpcError) as failure:
         await rpc.Vsearch(
-            vectordb_pb2.VsearchRequest(text="query", topk=top_k), timeout=3
+            vectordb_pb2.VsearchRequest(text="query", topk=top_k, threshold=0.5),
+            timeout=3,
         )
     assert failure.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+    rag.vectordb.search_uuids.assert_not_awaited()
+
+
+@pytest.mark.parametrize("threshold", [0.0, 0.5, 2.0])
+async def test_threshold_is_forwarded_without_default_substitution(rpc, rag, threshold):
+    response = await rpc.Vsearch(
+        vectordb_pb2.VsearchRequest(text="query", topk=7, threshold=threshold),
+        timeout=3,
+    )
+    assert list(response.texts) == []
+    rag.vectordb.search_uuids.assert_awaited_once_with(
+        [1.0] * 768, threshold=threshold, k=7
+    )
+
+
+@pytest.mark.parametrize("threshold", [float("nan"), float("inf"), float("-inf")])
+async def test_non_finite_threshold_is_invalid_argument(rpc, rag, threshold):
+    with pytest.raises(grpc.aio.AioRpcError) as failure:
+        await rpc.Vsearch(
+            vectordb_pb2.VsearchRequest(text="query", topk=3, threshold=threshold),
+            timeout=3,
+        )
+    assert failure.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+    rag.embedding_layer.encode.assert_not_called()
     rag.vectordb.search_uuids.assert_not_awaited()
 
 
@@ -130,7 +155,9 @@ async def test_get_errors_are_not_silently_filtered(rpc, rag, error, status):
     rag.vectordb.search_uuids.return_value = ["first"]
     rag.kvstore.get.side_effect = error
     with pytest.raises(grpc.aio.AioRpcError) as failure:
-        await rpc.Vsearch(vectordb_pb2.VsearchRequest(text="query", topk=1), timeout=3)
+        await rpc.Vsearch(
+            vectordb_pb2.VsearchRequest(text="query", topk=1, threshold=0.5), timeout=3
+        )
     assert failure.value.code() == status
 
 
