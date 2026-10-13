@@ -57,31 +57,92 @@ async def rpc(rag):
         await rag.aclose()
 
 
-async def test_vset_returns_uuid_for_both_backends(rpc, rag):
+async def test_vset_only_writes_vector_and_returns_uuid(rpc, rag):
     response = await rpc.Vset(vectordb_pb2.VsetRequest(text="hello"), timeout=3)
     assert str(UUID(response.uuid)) == response.uuid
     rag.vectordb.insert_vector.assert_awaited_once_with(response.uuid, [1.0] * 768)
-    rag.kvstore.set.assert_awaited_once_with(response.uuid, "hello")
+    rag.kvstore.set.assert_not_awaited()
+    rag.kvstore.get.assert_not_awaited()
     rag.embedding_layer.encode.assert_called_once_with("hello")
 
 
-async def test_vsearch_filters_missing_text_but_preserves_empty_text(rpc, rag):
+async def test_vsearch_returns_uuids_without_reading_text(rpc, rag):
     rag.vectordb.search_uuids.return_value = ["first", "missing", "empty"]
-    values = {"first": "text", "missing": None, "empty": ""}
-    rag.kvstore.get.side_effect = lambda key: values[key]
     response = await rpc.Vsearch(
         vectordb_pb2.VsearchRequest(text="query", topk=3, threshold=0.5), timeout=3
     )
-    assert list(response.texts) == ["text", ""]
+    assert list(response.uuids) == ["first", "missing", "empty"]
     rag.vectordb.search_uuids.assert_awaited_once_with([1.0] * 768, threshold=0.5, k=3)
+    rag.kvstore.set.assert_not_awaited()
+    rag.kvstore.get.assert_not_awaited()
+    rag.embedding_layer.encode.assert_called_once_with("query")
 
 
 async def test_empty_vector_search_does_not_read_text(rpc, rag):
     response = await rpc.Vsearch(
         vectordb_pb2.VsearchRequest(text="query", topk=5, threshold=0.5), timeout=3
     )
-    assert list(response.texts) == []
+    assert list(response.uuids) == []
     rag.kvstore.get.assert_not_awaited()
+
+
+@pytest.mark.parametrize("text", ["hello", ""])
+async def test_set_only_writes_text(rpc, rag, text):
+    response = await rpc.Set(
+        vectordb_pb2.SetRequest(uuid="uuid-one", text=text), timeout=3
+    )
+    assert response.ok is True
+    rag.kvstore.set.assert_awaited_once_with("uuid-one", text)
+    rag.kvstore.get.assert_not_awaited()
+    rag.embedding_layer.encode.assert_not_called()
+    rag.vectordb.insert_vector.assert_not_awaited()
+    rag.vectordb.search_uuids.assert_not_awaited()
+
+
+@pytest.mark.parametrize("text", ["stored text", ""])
+async def test_get_only_reads_text_and_preserves_empty_text(rpc, rag, text):
+    rag.kvstore.get.return_value = text
+    response = await rpc.Get(vectordb_pb2.GetRequest(uuid="uuid-one"), timeout=3)
+    assert response.text == text
+    rag.kvstore.get.assert_awaited_once_with("uuid-one")
+    rag.kvstore.set.assert_not_awaited()
+    rag.embedding_layer.encode.assert_not_called()
+    rag.vectordb.insert_vector.assert_not_awaited()
+    rag.vectordb.search_uuids.assert_not_awaited()
+
+
+async def test_get_missing_uuid_reports_not_found(rpc, rag):
+    rag.kvstore.get.return_value = None
+    with pytest.raises(grpc.aio.AioRpcError) as failure:
+        await rpc.Get(vectordb_pb2.GetRequest(uuid="missing"), timeout=3)
+    assert failure.value.code() == grpc.StatusCode.NOT_FOUND
+    rag.kvstore.get.assert_awaited_once_with("missing")
+
+
+async def test_split_rpcs_share_uuid(rpc, rag):
+    texts = {}
+
+    def store_text(key, value):
+        texts[key] = value
+        return True
+
+    rag.kvstore.set.side_effect = store_text
+    rag.kvstore.get.side_effect = texts.get
+    created = await rpc.Vset(vectordb_pb2.VsetRequest(text="vector text"), timeout=3)
+    assert texts == {}
+    written = await rpc.Set(
+        vectordb_pb2.SetRequest(uuid=created.uuid, text="stored text"), timeout=3
+    )
+    assert written.ok is True
+    rag.vectordb.search_uuids.return_value = [created.uuid]
+    matches = await rpc.Vsearch(
+        vectordb_pb2.VsearchRequest(text="query", topk=1, threshold=0.5), timeout=3
+    )
+    assert list(matches.uuids) == [created.uuid]
+    response = await rpc.Get(
+        vectordb_pb2.GetRequest(uuid=matches.uuids[0]), timeout=3
+    )
+    assert response.text == "stored text"
 
 
 @pytest.mark.parametrize("top_k", [0, -1, 65536])
@@ -101,7 +162,7 @@ async def test_threshold_is_forwarded_without_default_substitution(rpc, rag, thr
         vectordb_pb2.VsearchRequest(text="query", topk=7, threshold=threshold),
         timeout=3,
     )
-    assert list(response.texts) == []
+    assert list(response.uuids) == []
     rag.vectordb.search_uuids.assert_awaited_once_with(
         [1.0] * 768, threshold=threshold, k=7
     )
@@ -119,15 +180,21 @@ async def test_non_finite_threshold_is_invalid_argument(rpc, rag, threshold):
     rag.vectordb.search_uuids.assert_not_awaited()
 
 
-@pytest.mark.parametrize("backend", ["vectordb", "kvstore"])
-async def test_unsuccessful_write_reports_internal(rpc, rag, backend):
-    write = rag.vectordb.insert_vector if backend == "vectordb" else rag.kvstore.set
+@pytest.mark.parametrize("method", ["Vset", "Set"])
+async def test_unsuccessful_write_reports_internal(rpc, rag, method):
+    if method == "Vset":
+        write = rag.vectordb.insert_vector
+        request = vectordb_pb2.VsetRequest(text="hello")
+    else:
+        write = rag.kvstore.set
+        request = vectordb_pb2.SetRequest(uuid="uuid-one", text="hello")
     write.return_value = False
     with pytest.raises(grpc.aio.AioRpcError) as failure:
-        await rpc.Vset(vectordb_pb2.VsetRequest(text="hello"), timeout=3)
+        await getattr(rpc, method)(request, timeout=3)
     assert failure.value.code() == grpc.StatusCode.INTERNAL
 
 
+@pytest.mark.parametrize("method", ["Vset", "Set"])
 @pytest.mark.parametrize(
     "error,status",
     [
@@ -136,13 +203,19 @@ async def test_unsuccessful_write_reports_internal(rpc, rag, backend):
         (RedisError("failed"), grpc.StatusCode.INTERNAL),
     ],
 )
-async def test_write_errors_are_rpc_statuses(rpc, rag, error, status):
-    rag.vectordb.insert_vector.side_effect = error
+async def test_write_errors_are_rpc_statuses(rpc, rag, method, error, status):
+    if method == "Vset":
+        rag.vectordb.insert_vector.side_effect = error
+        request = vectordb_pb2.VsetRequest(text="hello")
+    else:
+        rag.kvstore.set.side_effect = error
+        request = vectordb_pb2.SetRequest(uuid="uuid-one", text="hello")
     with pytest.raises(grpc.aio.AioRpcError) as failure:
-        await rpc.Vset(vectordb_pb2.VsetRequest(text="hello"), timeout=3)
+        await getattr(rpc, method)(request, timeout=3)
     assert failure.value.code() == status
 
 
+@pytest.mark.parametrize("method", ["Vsearch", "Get"])
 @pytest.mark.parametrize(
     "error,status",
     [
@@ -151,13 +224,15 @@ async def test_write_errors_are_rpc_statuses(rpc, rag, error, status):
         (RedisError("failed"), grpc.StatusCode.INTERNAL),
     ],
 )
-async def test_get_errors_are_not_silently_filtered(rpc, rag, error, status):
-    rag.vectordb.search_uuids.return_value = ["first"]
-    rag.kvstore.get.side_effect = error
+async def test_read_errors_are_rpc_statuses(rpc, rag, method, error, status):
+    if method == "Vsearch":
+        rag.vectordb.search_uuids.side_effect = error
+        request = vectordb_pb2.VsearchRequest(text="query", topk=1, threshold=0.5)
+    else:
+        rag.kvstore.get.side_effect = error
+        request = vectordb_pb2.GetRequest(uuid="uuid-one")
     with pytest.raises(grpc.aio.AioRpcError) as failure:
-        await rpc.Vsearch(
-            vectordb_pb2.VsearchRequest(text="query", topk=1, threshold=0.5), timeout=3
-        )
+        await getattr(rpc, method)(request, timeout=3)
     assert failure.value.code() == status
 
 

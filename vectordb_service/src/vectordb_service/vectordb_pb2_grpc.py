@@ -44,6 +44,16 @@ class RagStub:
                 request_serializer=vectordb__service_dot_vectordb__pb2.VsearchRequest.SerializeToString,
                 response_deserializer=vectordb__service_dot_vectordb__pb2.VsearchResponse.FromString,
                 _registered_method=True)
+        self.Set = channel.unary_unary(
+                '/vectordb.kvstore.com.Rag/Set',
+                request_serializer=vectordb__service_dot_vectordb__pb2.SetRequest.SerializeToString,
+                response_deserializer=vectordb__service_dot_vectordb__pb2.SetResponse.FromString,
+                _registered_method=True)
+        self.Get = channel.unary_unary(
+                '/vectordb.kvstore.com.Rag/Get',
+                request_serializer=vectordb__service_dot_vectordb__pb2.GetRequest.SerializeToString,
+                response_deserializer=vectordb__service_dot_vectordb__pb2.GetResponse.FromString,
+                _registered_method=True)
 
 
 class RagServicer:
@@ -61,6 +71,18 @@ class RagServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Set(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Get(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_RagServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -73,6 +95,16 @@ def add_RagServicer_to_server(servicer, server):
                     servicer.Vsearch,
                     request_deserializer=vectordb__service_dot_vectordb__pb2.VsearchRequest.FromString,
                     response_serializer=vectordb__service_dot_vectordb__pb2.VsearchResponse.SerializeToString,
+            ),
+            'Set': grpc.unary_unary_rpc_method_handler(
+                    servicer.Set,
+                    request_deserializer=vectordb__service_dot_vectordb__pb2.SetRequest.FromString,
+                    response_serializer=vectordb__service_dot_vectordb__pb2.SetResponse.SerializeToString,
+            ),
+            'Get': grpc.unary_unary_rpc_method_handler(
+                    servicer.Get,
+                    request_deserializer=vectordb__service_dot_vectordb__pb2.GetRequest.FromString,
+                    response_serializer=vectordb__service_dot_vectordb__pb2.GetResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -129,6 +161,60 @@ class Rag:
             '/vectordb.kvstore.com.Rag/Vsearch',
             vectordb__service_dot_vectordb__pb2.VsearchRequest.SerializeToString,
             vectordb__service_dot_vectordb__pb2.VsearchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Set(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/vectordb.kvstore.com.Rag/Set',
+            vectordb__service_dot_vectordb__pb2.SetRequest.SerializeToString,
+            vectordb__service_dot_vectordb__pb2.SetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Get(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/vectordb.kvstore.com.Rag/Get',
+            vectordb__service_dot_vectordb__pb2.GetRequest.SerializeToString,
+            vectordb__service_dot_vectordb__pb2.GetResponse.FromString,
             options,
             channel_credentials,
             insecure,
