@@ -13,6 +13,7 @@
 #include <mutex>
 #include <filesystem>
 #include <vector>
+#include <utility>
 #include "engine_interface_base.h"
 #include "allocator.h"
 #include "kv_persistent.h"
@@ -76,24 +77,26 @@ namespace kv_engine
             if (base.insert(key_s, val_s) < 0)
                 return -1;
 
-            if (to_disk && kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF &&
-                kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_SET, key_s, val_s) < 0)
-                return -2;
-
             if (timeout && timeout->tv_sec != -1 && timeout->tv_nsec != -1)
             {
                 auto dur = TRANS_TIMEOUT_MILLI(timeout);
 
                 kv_timer::TimerManager::instance().add_event(
                     dur,
-                    [this, to_disk, k_s = std::move(key_s)]
+                    [this, to_disk, key_s]() mutable
                     {
                         std::lock_guard lk{this->lock_};
-                        static_cast<RealEngine *>(this)->get_base().delNode(k_s);
+                        static_cast<RealEngine *>(this)->get_base().delNode(key_s);
+                        string value{};
                         if (to_disk && kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF)
-                            kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_DEL, k_s, string{});
+                            kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_DEL, key_s, value);
                     });
             }
+
+            if (to_disk && kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF &&
+                kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_SET, key_s, val_s) < 0)
+                return -2;
+
             return 0;
         }
 
@@ -208,24 +211,26 @@ namespace kv_engine
 
             node->value = val_s;
 
-            if (to_disk && kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF &&
-                kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_MOD, key_s, val_s) < 0)
-                return -2;
-
             if (timeout && timeout->tv_sec != -1 && timeout->tv_nsec != -1)
             {
                 auto dur = TRANS_TIMEOUT_MILLI(timeout);
 
                 kv_timer::TimerManager::instance().add_event(
                     dur,
-                    [this, to_disk, k_s = std::move(key_s)]
+                    [this, to_disk, key_s]() mutable
                     {
                         std::lock_guard lk{this->lock_};
-                        static_cast<RealEngine *>(this)->get_base().delNode(k_s);
+                        static_cast<RealEngine *>(this)->get_base().delNode(key_s);
+                        string value{};
                         if (to_disk && kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF)
-                            kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_DEL, k_s, string{});
+                            kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_DEL, key_s, value);
                     });
             }
+
+            if (to_disk && kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF &&
+                kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_MOD, key_s, val_s) < 0)
+                return -2;
+
             return 0;
         }
 
@@ -243,8 +248,9 @@ namespace kv_engine
             if (base.delNode(key_s) == -1)
                 return 1;
 
+            string val_s{};
             if (to_disk && kv_persistent::g_persist_mode == kv_persistent::PersistMode::AOF &&
-                kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_DEL, key_s, string{}) < 0)
+                kv_persistent::StoreEngine::instance().dump_record(kv_protocal::KVS_DEL, key_s, val_s) < 0)
                 return -2;
 
             return 0;
