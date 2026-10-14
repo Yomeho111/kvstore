@@ -11,6 +11,7 @@
 #include <memory>
 #include <charconv>
 #include <condition_variable>
+#include <utility>
 #include "engine_interface_base.h"
 #include "allocator.h"
 #include "lockfree_queue.hpp"
@@ -124,13 +125,19 @@ namespace kv_persistent
 
         struct Node
         {
-            uint16_t command_;
+            uint16_t command_{0};
             string key_;
             string value_;
 
-            Node(uint16_t command, const string &key, const string &value) : command_(command), key_(key), value_(value) {}
+            Node() = default;
 
-            ~Node() = default;
+            Node(uint16_t command, string &&key, string &&value)
+                : command_(command), key_(std::move(key)), value_(std::move(value)) {}
+
+            Node(const Node &) = delete;
+            Node &operator=(const Node &) = delete;
+            Node(Node &&) noexcept = default;
+            Node &operator=(Node &&) noexcept = default;
         };
 
         using node_t = std::unique_ptr<Node>;
@@ -141,7 +148,7 @@ namespace kv_persistent
     public:
         static StoreEngine &instance();
 
-        int dump_record(uint16_t command, const string &key, const string &value);
+        int dump_record(uint16_t command, string &key, string &value);
 
         int load_record(kv_engine::EngineInterfaceBase *engine);
 

@@ -225,9 +225,9 @@ namespace kv_persistent
         }
     }
 
-    int StoreEngine::dump_record(uint16_t command, const string &key, const string &value)
+    int StoreEngine::dump_record(uint16_t command, string &key, string &value)
     {
-        auto node = std::make_unique<Node>(command, key, value);
+        auto node = std::make_unique<Node>(command, std::move(key), std::move(value));
 
         node_que_.enqueue(std::move(node));
 
