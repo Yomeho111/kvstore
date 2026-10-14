@@ -227,11 +227,12 @@ namespace kv_persistent
 
     int StoreEngine::dump_record(uint16_t command, string &key, string &value)
     {
+        static size_t count{0};
         auto node = std::make_unique<Node>(command, std::move(key), std::move(value));
 
         node_que_.enqueue(std::move(node));
-
-        cv_.notify_one();
+        if (++count % 500 == 0)
+            cv_.notify_one();
 
         return 0;
     }
