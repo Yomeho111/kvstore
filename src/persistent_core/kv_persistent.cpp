@@ -231,7 +231,7 @@ namespace kv_persistent
         auto node = std::make_unique<Node>(command, std::move(key), std::move(value));
 
         node_que_.enqueue(std::move(node));
-        if (++count % 500 == 0)
+        if (++count & (63) == 0)
             cv_.notify_one();
 
         return 0;
