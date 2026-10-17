@@ -171,6 +171,9 @@ namespace kv_engine
                 valid_count++;
             }
 
+            if (valid_count == 0)
+                return 0;
+
             response_size += valid_count - 1;
 
             *response = (char *)allocator::kv_malloc(response_size + 2);

@@ -384,6 +384,35 @@ A client-driven test harness is built as `kvstore_client_testcase`. Start a serv
 ./build/kvstore_client_testcase <ip> <port> <test_mode>
 ```
 
+### Vector Database (Mode 13)
+
+Build the server and client harness with vector support:
+
+```bash
+cmake -S . -B build-rag -DENABLE_RAG=ON -DKVSTORE_PORT_NUM=1
+cmake --build build-rag --target kvstore kvstore_client_testcase
+```
+
+Start a fresh, isolated server with `persistence.mode = none` and
+`VectorDB.ef >= 32` (the default is `50`), then run:
+
+```bash
+./build-rag/kvstore /path/to/vector-test.ini
+# In another terminal, using the port from vector-test.ini:
+./build-rag/kvstore_client_testcase 127.0.0.1 8060 13
+```
+
+Mode 13 checks vector `SET` acknowledgements and `VSEARCH <vector> <K> [threshold]`
+UUID results against an independent normalized squared-L2 oracle. It covers
+nearest-first ordering, query normalization, optional thresholds, empty results,
+and rejection of invalid vectors, K values, and thresholds. The 32-record fixture
+fits within the configured search breadth so exact Top-K comparisons are useful
+despite HNSW's approximate-search design.
+
+The vector interface does not provide UUID-based readback, overwrite, or deletion
+for this test. Inserted records remain in the index; restart the isolated server
+before each run. Do not run this mode against a database containing real data.
+
 ### Memory Profiling
 
 The server's memory footprint under each allocator is measured by
