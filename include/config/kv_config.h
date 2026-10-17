@@ -33,6 +33,10 @@ namespace kv_config
 
         string slave_rdma_ip;
         uint16_t slave_rdma_port{20000};
+
+        size_t M{16};
+        size_t ef_construction{200};
+        size_t ef{50};
     };
 
     // Returns 0 on success. A missing file, an unknown section/key, or a bad

@@ -147,6 +147,7 @@ if(ENABLE_RAG)
     )
     target_include_directories(kvstore_core PUBLIC
         ${PROJECT_SOURCE_DIR}/include/vector_database
+        ${CMAKE_SOURCE_DIR}/third_party/hnswlib
     )
     target_compile_definitions(kvstore_core PUBLIC ENABLE_RAG)
 endif()
