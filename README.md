@@ -140,6 +140,7 @@ All options are passed to CMake with `-D<OPTION>=<VALUE>`.
 | `ENABLE_TCMALLOC` | `ON`/`OFF` | `OFF` | Link against tcmalloc. |
 | `ENABLE_JEMALLOC` | `ON`/`OFF` | `OFF` | Link against jemalloc. |
 | `ENABLE_CPP_EXCEPTIONS` | `ON`/`OFF` | `OFF` | Compile with C++ exceptions enabled. |
+| `ENABLE_BRUTEFORCE` | `ON`/`OFF` | `OFF` | Use brute-force vector search instead of HNSW when `ENABLE_RAG=ON`. |
 | `CMAKE_BUILD_TYPE` | `Debug`/`Release` | `Debug` | Standard CMake build type. |
 
 > Note: `ENABLE_TCMALLOC` and `ENABLE_JEMALLOC` are mutually exclusive.

@@ -30,6 +30,7 @@ option(ENABLE_TCMALLOC "Link with tcmalloc" OFF)
 option(ENABLE_JEMALLOC "Link with jemalloc" OFF)
 option(ENABLE_CPP_EXCEPTIONS "Enable C++ exceptions" OFF)
 option(ENABLE_RAG "Enable vector database search" OFF)
+option(ENABLE_BRUTEFORCE "Use brute-force vector search instead of HNSW" OFF)
 option(BUILD_EBPF_TRANSFER "Build the standalone eBPF delta transfer daemon" OFF)
 
 if(BUILD_EBPF_TRANSFER)
@@ -139,6 +140,10 @@ target_compile_definitions(kvstore_core
 
 if(ENABLE_MEMORY_POOL)
     target_compile_definitions(kvstore_core PUBLIC ENABLE_MEMORY_POOL)
+endif()
+
+if(ENABLE_BRUTEFORCE)
+    target_compile_definitions(kvstore_core PUBLIC ENABLE_BRUTEFORCE)
 endif()
 
 if(ENABLE_RAG)

@@ -32,6 +32,12 @@ namespace vectordb
 
     class VectorDbEngine
     {
+
+#ifdef ENABLE_BRUTEFORCE
+        using VectordbCore = hnswlib::BruteforceSearch<float>;
+#else
+        using VectordbCore = hnswlib::HierarchicalNSW<float>;
+#endif
     public:
         /**
          * @brief verify the vector value is valid for the system, it should be like <Version><Dimension><vector>
@@ -61,7 +67,7 @@ namespace vectordb
         size_t cur_id_{1};
 
         std::unique_ptr<hnswlib::L2Space> space_;
-        std::unique_ptr<hnswlib::HierarchicalNSW<float>> hnsw_;
+        std::unique_ptr<VectordbCore> hnsw_;
     };
 } // namespace vectordb
 
