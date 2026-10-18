@@ -12,7 +12,7 @@
 
 #include "hnswlib/hnswlib.h"
 
-#define DEFAULT_VECTORDB_PATH "data/vectordb.bin"
+#define DEFAULT_VECTORDB_PATH "vdb_data/vectordb.bin"
 
 namespace vectordb
 {
