@@ -44,6 +44,21 @@ namespace kv_config
             return true;
         }
 
+        bool parse_size(const std::string &text, size_t &out)
+        {
+            errno = 0;
+            char *end = nullptr;
+            size_t value = strtoul(text.c_str(), &end, 10);
+
+            if (errno != 0 || end == text.c_str() || (end && *end != '\0'))
+                return false;
+            if (value < 1 || value > 65535)
+                return false;
+
+            out = value;
+            return true;
+        }
+
         // The address is handed to inet_pton() when the RDMA listener binds, so a
         // hostname would only fail much later.
         bool parse_ipv4(const std::string &text, string &out)
@@ -188,6 +203,14 @@ namespace kv_config
                 bad_value = !parse_ipv4(raw, parsed.slave_rdma_ip);
             else if (section == "replication" && key == "slave_rdma_port")
                 bad_value = !parse_port(value, parsed.slave_rdma_port);
+#ifdef ENABLE_RAG
+            else if (section == "vectordb" && key == "m")
+                bad_value = !parse_size(value, parsed.M);
+            else if (section == "vectordb" && key == "ef_construction")
+                bad_value = !parse_size(value, parsed.ef_construction);
+            else if (section == "vectordb" && key == "ef")
+                bad_value = !parse_size(value, parsed.ef);
+#endif
             else
             {
                 KV_ERROR("%s:%d: unknown setting '%s' in section '[%s]'",

@@ -26,7 +26,7 @@ namespace kv_engine
         virtual int exist(const char *key, size_t key_len) = 0;
 
 #ifdef ENABLE_RAG
-        virtual int vsearch(const char *vector, size_t vec_len, int K, float threshold, char **response) = 0;
+        virtual int vsearch(const void *vector, size_t K, char **response, float threshold) = 0;
 #endif
 
         virtual int init() noexcept = 0;

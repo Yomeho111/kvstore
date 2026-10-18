@@ -12,6 +12,7 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <limits>
 
 #include "status.h"
 #include "engine_interface.hpp"
@@ -293,12 +294,41 @@ namespace kv_protocal
 
 #ifdef ENABLE_RAG
                     // Verify the vector value
-                    if (vectordb::VectorDbEngine::transform_vector(argv[2], argvlen[2]) < 0)
+                    void *vector = vectordb::VectorDbEngine::transform_vector(argv[2], argvlen[2]);
+                    if (vector == nullptr)
                     {
                         out += "-ERR invalid vector data\r\n";
                         return 0;
                     }
-#endif
+
+                    auto &vdb = vectordb::VectorDbEngine::instance();
+                    size_t vec_id{0};
+                    if (vdb.insert_vector(vector, vec_id) < 0 || vec_id == 0)
+                    {
+                        out += "-ERR Error vector data\r\n";
+                        return 0;
+                    }
+
+                    char buffer[32];
+                    auto [ptr, ec] = std::to_chars(
+                        buffer,
+                        buffer + sizeof(buffer),
+                        vec_id);
+
+                    if (ec != std::errc{})
+                    {
+                        out += "-ERR Error vector data\r\n";
+                        return 0;
+                    }
+
+                    int ret = _engine.set(buffer, ptr - buffer, argv[1], argvlen[1], tp);
+                    if (ret > 0)
+                        ret = _engine.modify(buffer, ptr - buffer, argv[1], argvlen[1], tp);
+                    if (ret == 0)
+                        out += "+OK\r\n";
+                    else
+                        out += "-ERR set failed\r\n";
+#else
                     int ret = _engine.set(argv[1], argvlen[1], argv[2], argvlen[2], tp);
                     if (ret > 0)
                         ret = _engine.modify(argv[1], argvlen[1], argv[2], argvlen[2], tp);
@@ -306,6 +336,7 @@ namespace kv_protocal
                         out += "+OK\r\n";
                     else
                         out += "-ERR set failed\r\n";
+#endif
                     return 0;
                 }
                 case KV_SETEX:
@@ -543,7 +574,7 @@ namespace kv_protocal
 #ifdef ENABLE_RAG
                 case KV_VSEARCH:
                 {
-                    if (argc < 4)
+                    if (argc < 3)
                     {
                         out += "-ERR wrong number of arguments for 'vsearch' command, <vector> <topk> <threshold>\r\n";
                         return 0;
@@ -556,23 +587,24 @@ namespace kv_protocal
                         return 0;
                     }
 
-                    float threshold = 0.0f;
-                    if (!_resp_to_float(argv[3], argvlen[3], threshold))
+                    float threshold = std::numeric_limits<float>::infinity();
+                    if (argc > 3 && !_resp_to_float(argv[3], argvlen[3], threshold))
                     {
                         out += "-ERR invalid threshold\r\n";
                         return 0;
                     }
 
-                    if (vectordb::VectorDbEngine::transform_vector(argv[1], argvlen[1]) < 0)
+                    void *vector = vectordb::VectorDbEngine::transform_vector(argv[1], argvlen[1]);
+                    if (vector == nullptr)
                     {
                         out += "-ERR invalid vector data\r\n";
                         return 0;
                     }
 
-                    int top_k = static_cast<int>(K);
+                    size_t top_k = static_cast<size_t>(K);
 
                     char *value = nullptr;
-                    int ret = _engine.vsearch(argv[1], argvlen[1], top_k, threshold, &value);
+                    int ret = _engine.vsearch(vector, top_k, &value, threshold);
                     if (ret > 0)
                     {
                         size_t vlen = static_cast<size_t>(ret) - 2;

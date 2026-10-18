@@ -21,6 +21,10 @@
 #include <pthread.h>
 #include <thread>
 
+#ifdef ENABLE_RAG
+#include "vectordb_tool.h"
+#endif
+
 #define DEFAULT_CONFIG_PATH "config/kvstore.ini"
 
 void handler(int sig)
@@ -125,6 +129,10 @@ int main(int argc, char *argv[])
             kv_config::role_name(cfg.role),
             kv_config::persist_mode_name(cfg.persist_mode),
             kv_log::level_name(cfg.log_level));
+
+#ifdef ENABLE_RAG
+    auto &vdb = vectordb::VectorDbEngine::instance(&cfg);
+#endif
 
     auto &prot = kv_protocal::KvStoreProtocal::instance();
 

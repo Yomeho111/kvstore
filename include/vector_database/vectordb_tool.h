@@ -6,7 +6,13 @@
 #include <vector>
 #include <concepts>
 #include <algorithm>
+#include <memory>
 #include "allocator.h"
+#include "kv_config.h"
+
+#include "hnswlib/hnswlib.h"
+
+#define DEFAULT_VECTORDB_PATH "vdb_data/vectordb.bin"
 
 namespace vectordb
 {
@@ -18,7 +24,12 @@ namespace vectordb
 
     inline constexpr static uint32_t VERSION{0x01};
 
-    inline constexpr static float INVALID_DISTANCE{10.0f};
+    inline constexpr static size_t DIMENSION{768};
+
+    inline constexpr static size_t MAX_ELEMENTS{100000};
+
+    using IdContainer = std::vector<std::pair<float, size_t>>;
+
     class VectorDbEngine
     {
     public:
@@ -26,62 +37,31 @@ namespace vectordb
          * @brief verify the vector value is valid for the system, it should be like <Version><Dimension><vector>
          * <4bytes><4bytes><Dimension * float32>
          */
-        static int transform_vector(char *value, size_t len);
+        static void *transform_vector(char *value, size_t len);
 
-        static float calculate_distance(const char *v1, size_t l1, const char *v2, size_t l2);
+        static VectorDbEngine &instance(const kv_config::Config *config = nullptr);
 
-        template <Comparable T>
-        static int get_top_k(std::vector<T, allocator::MyAllocator<T>> &vec, int K)
-        {
-            if (vec.size() <= K)
-                return 0;
-            auto pivot_func = [&vec](int start, int end) -> int
-            {
-                int pivot = end;
-                int l = start;
-                int r = end - 1;
-                int p = start;
+        int insert_vector(const void *data, size_t &vec_id);
 
-                while (p <= r)
-                {
-                    if (vec[p] < vec[pivot])
-                    {
-                        std::swap(vec[l++], vec[p++]);
-                    }
-                    else if (vec[p] > vec[pivot])
-                    {
-                        std::swap(vec[p], vec[r--]);
-                    }
-                    else
-                    {
-                        p++;
-                    }
-                }
+        IdContainer query_nearest(const void *query_data, size_t k);
 
-                pivot = p;
-                std::swap(vec[pivot], vec[end]);
-                return pivot;
-            };
+    private:
+        VectorDbEngine(bool is_persistent) : is_persistent_(is_persistent) {}
+        VectorDbEngine(const VectorDbEngine &) = delete;
+        VectorDbEngine(VectorDbEngine &&) = delete;
+        VectorDbEngine &operator=(const VectorDbEngine &) = delete;
+        VectorDbEngine &operator=(VectorDbEngine &&) = delete;
 
-            int l = 0;
-            int r = vec.size() - 1;
+        ~VectorDbEngine();
 
-            while (l <= r)
-            {
-                int pivot = pivot_func(l, r);
-                if (pivot == K - 1)
-                {
-                    return pivot;
-                }
-                else if (pivot > K - 1)
-                {
-                    r = pivot - 1;
-                }
-                else
-                    l = pivot + 1;
-            }
-            return -1;
-        }
+        bool is_persistent_{false};
+        bool running_{false};
+        int _init(const kv_config::Config *config);
+
+        size_t cur_id_{1};
+
+        std::unique_ptr<hnswlib::L2Space> space_;
+        std::unique_ptr<hnswlib::HierarchicalNSW<float>> hnsw_;
     };
 } // namespace vectordb
 

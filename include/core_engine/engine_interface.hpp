@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <vector>
 #include <utility>
+#include <limits>
 #include "engine_interface_base.h"
 #include "allocator.h"
 #include "kv_persistent.h"
@@ -125,50 +126,55 @@ namespace kv_engine
         }
 
 #ifdef ENABLE_RAG
-        int vsearch(const char *vector, size_t vec_len, int K, float threshold, char **response) override
+        int vsearch(const void *vector, size_t K, char **response, float threshold = std::numeric_limits<float>::infinity()) override
         {
-            if (!vector || vec_len == 0 || K <= 0)
+            if (!vector || K <= 0)
                 return -1;
 
             if (static_cast<double>(threshold) <= 1e-8)
                 return 0;
 
             std::lock_guard lk{lock_};
+            auto &vdb = vectordb::VectorDbEngine::instance();
+
+            auto results = vdb.query_nearest(vector, K);
+            if (results.empty())
+                return 0;
+
+            size_t result_count = results.size();
+            size_t response_size{0};
+            size_t valid_count{0};
+            std::vector<string *, allocator::MyAllocator<string *>> uuid_vec;
             auto &base = static_cast<RealEngine *>(this)->get_base();
-            size_t size = base.size();
+            uuid_vec.reserve(result_count);
 
-            if (size == 0)
-                return 0;
-            std::vector<Vnode, allocator::MyAllocator<Vnode>> node_vec;
-
-            node_vec.reserve(size);
-
-            for (auto it = this->begin(); it != this->end(); ++it)
-            {
-                auto *node = *it;
-                float distance = vectordb::VectorDbEngine::calculate_distance(vector, vec_len, node->value.c_str(), node->value.size());
-                if (std::fabs(distance - vectordb::INVALID_DISTANCE) < 1e-6 || distance >= threshold)
-                    continue;
-                node_vec.emplace_back(distance, &node->key);
-            }
-
-            const size_t candidate_count = node_vec.size();
-            if (candidate_count == 0)
-                return 0;
-
-            const size_t result_count = std::min(static_cast<size_t>(K), candidate_count);
-            if (result_count < candidate_count)
-            {
-                int pivot = vectordb::VectorDbEngine::get_top_k(node_vec, K);
-                if (pivot != K - 1)
-                    return -2;
-            }
-
-            size_t response_size = result_count - 1;
             for (size_t index = 0; index < result_count; index++)
             {
-                response_size += node_vec[index].key_ptr->size();
+                auto &[distance, vec_id] = results[index];
+                if (distance > threshold)
+                    break;
+                char buffer[32];
+                auto [ptr, ec] = std::to_chars(
+                    buffer,
+                    buffer + sizeof(buffer),
+                    vec_id);
+
+                if (ec != std::errc{})
+                {
+                    return -1;
+                }
+
+                string vec_id_str(buffer, ptr);
+                auto *node = base.get_node(vec_id_str);
+                uuid_vec.push_back(&node->value);
+                response_size += node->value.size();
+                valid_count++;
             }
+
+            if (valid_count == 0)
+                return 0;
+
+            response_size += valid_count - 1;
 
             *response = (char *)allocator::kv_malloc(response_size + 2);
             if (*response == nullptr)
@@ -176,16 +182,16 @@ namespace kv_engine
 
             char *cur = *response;
             size_t index = 0;
-            for (; index + 1 < result_count; index++)
+            for (; index + 1 < valid_count; index++)
             {
-                memcpy(cur, node_vec[index].key_ptr->c_str(), node_vec[index].key_ptr->size());
-                cur += node_vec[index].key_ptr->size();
+                memcpy(cur, uuid_vec[index]->c_str(), uuid_vec[index]->size());
+                cur += uuid_vec[index]->size();
                 *cur = ',';
                 cur++;
             }
 
-            memcpy(cur, node_vec[index].key_ptr->c_str(), node_vec[index].key_ptr->size());
-            cur += node_vec[index].key_ptr->size();
+            memcpy(cur, uuid_vec[index]->c_str(), uuid_vec[index]->size());
+            cur += uuid_vec[index]->size();
 
             memcpy(cur, "\r\n", 2);
 

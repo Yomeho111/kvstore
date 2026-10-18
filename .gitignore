@@ -30,6 +30,7 @@ out/
 *.dt
 data/
 rdb_data/
+vdb_data/
 benchmark_results/
 *.log
 

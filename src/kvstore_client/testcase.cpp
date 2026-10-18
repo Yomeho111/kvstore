@@ -12,6 +12,7 @@
 #ifdef ENABLE_RAG
 #include <array>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <vector>
 #include "vectordb_tool.h"
@@ -516,7 +517,7 @@ static long long testcase_timer_multi_step(redisContext *c)
 }
 
 #ifdef ENABLE_RAG
-constexpr uint32_t VECTOR_DIMENSION = 768;
+constexpr uint32_t VECTOR_DIMENSION = vectordb::DIMENSION;
 constexpr int VECTOR_RECORD_COUNT = 32;
 using Embedding = std::array<float, VECTOR_DIMENSION>;
 
@@ -552,36 +553,18 @@ static double embedding_norm(const Embedding &embedding)
     return std::sqrt(squared_norm);
 }
 
-static void expect_embedding(redisContext *context, const char *name, const VectorRecord &record)
-{
-    redisReply *reply = next_reply(context, name);
-    const size_t header_size = sizeof(uint32_t) * 2;
-    if (reply->type != REDIS_REPLY_STRING || reply->len != header_size + VECTOR_DIMENSION * sizeof(float))
-        resp_abort(context, reply, name, "expected a 768-dimensional float32 embedding");
-
-    uint32_t version, dimension;
-    memcpy(&version, reply->str, sizeof(version));
-    memcpy(&dimension, reply->str + sizeof(version), sizeof(dimension));
-    if (version != vectordb::VERSION || dimension != VECTOR_DIMENSION)
-        resp_abort(context, reply, name, "incorrect vector header");
-
-    const double norm = embedding_norm(record.embedding);
-    for (size_t index = 0; index < VECTOR_DIMENSION; ++index)
-    {
-        float component;
-        memcpy(&component, reply->str + header_size + index * sizeof(float), sizeof(component));
-        if (!std::isfinite(component) || std::fabs(component - record.embedding[index] / norm) > 1e-6)
-            resp_abort(context, reply, name, "stored embedding differs from the normalized input");
-    }
-    freeReplyObject(reply);
-}
-
 static void expect_vector_search(redisContext *context, const char *name, const Embedding &query,
-                                 const std::vector<VectorRecord> &records, int top_k)
+                                 const std::vector<VectorRecord> &records, int top_k,
+                                 float threshold = std::numeric_limits<float>::infinity())
 {
     std::string blob = make_vector_blob(query.data(), VECTOR_DIMENSION);
-    redisAppendCommand(context, "VSEARCH %b %d", blob.data(), blob.size(), top_k);
-    if (records.empty())
+    if (threshold == std::numeric_limits<float>::infinity())
+        redisAppendCommand(context, "VSEARCH %b %d", blob.data(), blob.size(), top_k);
+    else
+        redisAppendCommand(context, "VSEARCH %b %d %.9g", blob.data(), blob.size(), top_k,
+                           static_cast<double>(threshold));
+
+    if (records.empty() || threshold <= 0.0f)
     {
         expect_nil(context, name);
         return;
@@ -591,18 +574,28 @@ static void expect_vector_search(redisContext *context, const char *name, const 
     const double query_norm = embedding_norm(query);
     for (const auto &record : records)
     {
-        double dot = 0.0;
+        const double record_norm = embedding_norm(record.embedding);
+        double squared_l2 = 0.0;
         for (size_t index = 0; index < VECTOR_DIMENSION; ++index)
-            dot += static_cast<double>(query[index]) * record.embedding[index];
-        ranked.emplace_back(1.0 - dot / (query_norm * embedding_norm(record.embedding)), record.key);
+        {
+            const double difference = query[index] / query_norm - record.embedding[index] / record_norm;
+            squared_l2 += difference * difference;
+        }
+        if (squared_l2 <= threshold)
+            ranked.emplace_back(squared_l2, record.key);
     }
     std::sort(ranked.begin(), ranked.end());
 
+    if (ranked.empty())
+    {
+        expect_nil(context, name);
+        return;
+    }
+
     std::vector<std::string> expected;
-    const size_t result_count = std::min(static_cast<size_t>(top_k), records.size());
+    const size_t result_count = std::min(static_cast<size_t>(top_k), ranked.size());
     for (size_t index = 0; index < result_count; ++index)
         expected.push_back(ranked[index].second);
-    std::sort(expected.begin(), expected.end());
 
     redisReply *reply = next_reply(context, name);
     if (reply->type != REDIS_REPLY_STRING)
@@ -618,9 +611,8 @@ static void expect_vector_search(redisContext *context, const char *name, const 
             break;
         begin = separator + 1;
     }
-    std::sort(actual.begin(), actual.end());
     if (actual != expected)
-        resp_abort(context, reply, name, "Top-K UUIDs do not match the independent cosine-distance oracle");
+        resp_abort(context, reply, name, "Top-K UUIDs or order differ from the normalized squared-L2 oracle");
     freeReplyObject(reply);
 }
 
@@ -661,20 +653,6 @@ static long long testcase_vector_database(redisContext *context)
     for (size_t index = 0; index < records.size(); ++index)
         expect_status(context, name, "OK");
 
-    for (const auto &record : records)
-    {
-        redisAppendCommand(context, "GET %b", record.key.data(), record.key.size());
-        ++commands;
-    }
-    for (const auto &record : records)
-        expect_embedding(context, name, record);
-
-    const std::string filtered_key = make_vector_uuid(VECTOR_RECORD_COUNT);
-    std::string filtered_blob = make_vector_blob(query.data(), VECTOR_DIMENSION - 1);
-    redisAppendCommand(context, "SET %b %b", filtered_key.data(), filtered_key.size(), filtered_blob.data(), filtered_blob.size());
-    expect_status(context, name, "OK");
-    ++commands;
-
     for (int top_k : {1, 5, 16, VECTOR_RECORD_COUNT, VECTOR_RECORD_COUNT + 1, 64})
     {
         expect_vector_search(context, "resp-vector-top-k", query, records, top_k);
@@ -683,52 +661,69 @@ static long long testcase_vector_database(redisContext *context)
     expect_vector_search(context, "resp-vector-second-query", records[17].embedding, records, 7);
     ++commands;
 
-    for (float &component : records.front().embedding)
-        component = -component;
-    std::string replacement = make_vector_blob(records.front().embedding.data(), VECTOR_DIMENSION);
-    redisAppendCommand(context, "SET %b %b", records.front().key.data(), records.front().key.size(), replacement.data(), replacement.size());
-    expect_status(context, name, "OK");
-    redisAppendCommand(context, "GET %b", records.front().key.data(), records.front().key.size());
-    expect_embedding(context, name, records.front());
-    expect_vector_search(context, "resp-vector-overwrite", query, records, 5);
-    commands += 3;
+    Embedding scaled_query = query;
+    for (float &component : scaled_query)
+        component *= 8.0f;
+    expect_vector_search(context, "resp-vector-query-normalization", scaled_query, records, 5);
+    ++commands;
 
-    redisAppendCommand(context, "DEL %b", records.back().key.data(), records.back().key.size());
-    expect_integer(context, name, 1);
-    redisAppendCommand(context, "GET %b", records.back().key.data(), records.back().key.size());
-    expect_nil(context, name);
-    records.pop_back();
-    expect_vector_search(context, "resp-vector-delete", query, records, 64);
-    commands += 3;
+    for (float threshold : {1.5f, 2.0f, 4.0f, 0.0f, -1.0f})
+    {
+        expect_vector_search(context, "resp-vector-threshold", query, records, 64, threshold);
+        ++commands;
+    }
+
+    Embedding opposite_query = query;
+    for (float &component : opposite_query)
+        component = -component;
+    expect_vector_search(context, "resp-vector-all-filtered", opposite_query, records, 64, 0.25f);
+    ++commands;
 
     std::string query_blob = make_vector_blob(query.data(), VECTOR_DIMENSION);
+    std::vector<std::string> invalid_blobs{
+        query_blob.substr(0, sizeof(uint32_t)),
+        query_blob.substr(0, query_blob.size() - 1),
+        make_vector_blob(query.data(), VECTOR_DIMENSION - 1),
+        make_vector_blob(Embedding{}.data(), VECTOR_DIMENSION)};
+
+    std::string invalid_version_blob = query_blob;
+    const uint32_t invalid_version = vectordb::VERSION + 1;
+    memcpy(invalid_version_blob.data(), &invalid_version, sizeof(invalid_version));
+    invalid_blobs.push_back(std::move(invalid_version_blob));
+
+    for (float invalid_component : {std::numeric_limits<float>::quiet_NaN(),
+                                    std::numeric_limits<float>::infinity()})
+    {
+        Embedding invalid_embedding = query;
+        invalid_embedding[0] = invalid_component;
+        invalid_blobs.push_back(make_vector_blob(invalid_embedding.data(), VECTOR_DIMENSION));
+    }
+
+    const std::string invalid_key = make_vector_uuid(VECTOR_RECORD_COUNT);
+    for (const auto &blob : invalid_blobs)
+    {
+        redisAppendCommand(context, "SET %b %b", invalid_key.data(), invalid_key.size(), blob.data(), blob.size());
+        expect_vector_error(context, "resp-vector-invalid-set", "ERR invalid vector data");
+        redisAppendCommand(context, "VSEARCH %b 1", blob.data(), blob.size());
+        expect_vector_error(context, "resp-vector-invalid-query", "ERR invalid vector data");
+        commands += 2;
+    }
+
     for (int invalid_k : {0, -1, 65536})
     {
         redisAppendCommand(context, "VSEARCH %b %d", query_blob.data(), query_blob.size(), invalid_k);
         expect_vector_error(context, name, "ERR invalid K");
         ++commands;
     }
-    redisAppendCommand(context, "VSEARCH %b 1", query_blob.data(), query_blob.size() - 1);
-    expect_vector_error(context, name, "ERR invalid vector data");
-    Embedding zero{};
-    std::string zero_blob = make_vector_blob(zero.data(), VECTOR_DIMENSION);
-    redisAppendCommand(context, "VSEARCH %b 1", zero_blob.data(), zero_blob.size());
-    expect_vector_error(context, name, "ERR invalid vector data");
-    commands += 2;
-
-    for (const auto &record : records)
+    for (const char *invalid_threshold : {"nan", "inf", "-inf", "invalid"})
     {
-        redisAppendCommand(context, "DEL %b", record.key.data(), record.key.size());
+        redisAppendCommand(context, "VSEARCH %b 1 %s", query_blob.data(), query_blob.size(), invalid_threshold);
+        expect_vector_error(context, "resp-vector-invalid-threshold", "ERR invalid threshold");
         ++commands;
     }
-    for (size_t index = 0; index < records.size(); ++index)
-        expect_integer(context, name, 1);
-    records.clear();
-    expect_vector_search(context, "resp-vector-all-filtered", query, records, 64);
-    redisAppendCommand(context, "DEL %b", filtered_key.data(), filtered_key.size());
-    expect_integer(context, name, 1);
-    expect_vector_search(context, "resp-vector-cleanup", query, records, 1);
-    commands += 3;
+
+    expect_vector_search(context, "resp-vector-after-invalid-requests", query, records, 64);
+    ++commands;
 
     return commands;
 }
@@ -794,8 +789,9 @@ static void usage(const char *prog)
             "  12  SET <writes> keys, one SAVE every <save interval> writes\n"
             "      (needs a server in mode = rdb; both arguments are required)\n"
 #ifdef ENABLE_RAG
-            "  13  UUID keys / 768-dimensional float32 embeddings / cosine Top-K\n"
-            "      (needs ENABLE_RAG=ON and an empty, isolated database)\n"
+            "  13  vector SET / HNSW squared-L2 Top-K / thresholds and validation\n"
+            "      (needs ENABLE_RAG=ON, an empty isolated server, and ef >= 32;\n"
+            "       inserts remain in the index: restart the server before rerunning)\n"
 #endif
             ,
             prog, LARGE_VALUE_LEN, N, N, UNIQUE_KV_COUNT);

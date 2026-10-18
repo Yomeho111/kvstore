@@ -7,3 +7,6 @@
 [submodule "third_party/isa-l"]
 	path = third_party/isa-l
 	url = https://github.com/intel/isa-l.git
+[submodule "third_party/hnswlib"]
+	path = third_party/hnswlib
+	url = https://github.com/nmslib/hnswlib.git
