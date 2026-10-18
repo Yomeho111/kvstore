@@ -414,6 +414,24 @@ The vector interface does not provide UUID-based readback, overwrite, or deletio
 for this test. Inserted records remain in the index; restart the isolated server
 before each run. Do not run this mode against a database containing real data.
 
+### Vector Recall / QPS / Latency Benchmark
+
+Run `bash vectordb_test/benchmark.sh` to build both brute-force and HNSW servers
+with `ENABLE_RAG=ON` and compare them using the same 10,000 random 768-dimensional
+vectors and 200 independent random queries. The script prints Recall@10 and
+search QPS/latency for both engines, plus insertion QPS/latency for HNSW only.
+Latency statistics include mean/P50/P95/P99/max round-trip time. It talks directly
+to kvstore over RESP without `vectordb_service` or third-party Python packages.
+See [vectordb_test/README.md](vectordb_test/README.md) for threshold semantics,
+measurement details, tuning options and saved JSON reports.
+
+For the same random-vector workload against Qdrant, run
+`bash qdrant_test/benchmark.sh`. It starts and removes its own temporary Docker
+container, prints the same English search and HNSW-only insertion tables,
+compares exact search with HNSW, and waits for indexing before measurement. See
+[qdrant_test/README.md](qdrant_test/README.md) for Docker requirements, HNSW
+options, distance/threshold conversion and asynchronous-indexing caveats.
+
 ### Memory Profiling
 
 The server's memory footprint under each allocator is measured by
