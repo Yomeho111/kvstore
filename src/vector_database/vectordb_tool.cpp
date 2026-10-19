@@ -1,6 +1,7 @@
 #include "vectordb_tool.h"
 #include <math.h>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <stdlib.h>
 #include <limits>
@@ -140,32 +141,55 @@ namespace vectordb
 
         if (is_persistent_ && fs::exists(file_path) && fs::is_regular_file(file_path))
         {
+#ifdef ENABLE_BRUTEFORCE
+            hnsw_ = std::make_unique<VectordbCore>(
+                space_.get(),
+                DEFAULT_VECTORDB_PATH);
+#else
             hnsw_ =
-                std::make_unique<hnswlib::HierarchicalNSW<float>>(
+                std::make_unique<VectordbCore>(
                     space_.get(),
                     DEFAULT_VECTORDB_PATH,
                     false,
                     MAX_ELEMENTS,
                     true);
+
+#endif
         }
         else
         {
-            hnsw_ = std::make_unique<hnswlib::HierarchicalNSW<float>>(
+#ifdef ENABLE_BRUTEFORCE
+            hnsw_ = std::make_unique<VectordbCore>(
+                space_.get(),
+                MAX_ELEMENTS);
+#else
+            hnsw_ = std::make_unique<VectordbCore>(
                 space_.get(),
                 MAX_ELEMENTS,
                 config->M,
                 config->ef_construction,
                 100,
                 true);
+#endif
         }
 
         size_t max_label = 0;
+#ifdef ENABLE_BRUTEFORCE
+        const size_t count = hnsw_->cur_element_count;
+        for (size_t i = 0; i < count; ++i)
+        {
+            hnswlib::labeltype label;
+            std::memcpy(&label, hnsw_->data_ + i * hnsw_->size_per_element_ + hnsw_->data_size_, sizeof(label));
+            max_label = std::max(max_label, label);
+        }
+#else
         const size_t count = hnsw_->getCurrentElementCount();
 
         for (hnswlib::tableint i = 0; i < count; ++i)
         {
             max_label = std::max(max_label, hnsw_->getExternalLabel(i));
         }
+#endif
 
         if (max_label == std::numeric_limits<size_t>::max())
         {
@@ -174,9 +198,9 @@ namespace vectordb
         }
 
         cur_id_ = max_label + 1;
-
+#ifndef ENABLE_BRUTEFORCE
         hnsw_->ef_ = config->ef;
-
+#endif
         return 0;
     }
 
